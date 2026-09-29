@@ -1100,9 +1100,12 @@ def move_bpf(
         )
 
     print()
-    answer = input("🟡 The actuators will move to the position described above. OK? ---> [y/N] ")
 
-    if answer != "y":
+    # soft limit
+    if any(
+        calculated_position >= 2.5 - RESOLUTION_MM
+        for _, _, calculated_position in actuator_list
+    ):
         print("🔴 Motion canceled")
         return None
 
