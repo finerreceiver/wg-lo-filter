@@ -3,6 +3,15 @@ import argparse
 import time
 import math
 
+# 2026-10-04: 既存の待ち時間を用途別に命名。秒数・呼び出し順は維持。
+# DISPLAYはログを読む間隔、WAIT/AFTERは処理後の既存待ち時間。
+CONFIG_DISPLAY_PAUSE_S = 3
+SECTION_DISPLAY_PAUSE_S = 3
+STEP_DISPLAY_PAUSE_S = 2
+AFTER_PREPARATION_PAUSE_S = 2
+AFTER_INDEX_PAUSE_S = 2
+CLOSE_DISPLAY_PAUSE_S = 1.5
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -13,7 +22,7 @@ if __name__ == "__main__":
 
     u.print_section("BPF configuration")
     print(f"  BPF ID     : #{BPF_ID}")
-    time.sleep(3)
+    time.sleep(CONFIG_DISPLAY_PAUSE_S)
 
     IFNAME = "eth0"
 
@@ -23,40 +32,40 @@ if __name__ == "__main__":
 
         for slave_id in slave_list:
             u.print_section(f"Slave ID {slave_id}: pre-motion setup")
-            time.sleep(3)
+            time.sleep(SECTION_DISPLAY_PAUSE_S)
 
             ## Parameter setting
             print(f"▶️  [Slave ID = {slave_id}]: Now setting parameter...")
             u.prepare_actuator(slave_id, bpf_id=BPF_ID)
             print(f"✅ [Slave ID = {slave_id}]: Parameters applied and controller enabled")
-            time.sleep(2)
+            time.sleep(AFTER_PREPARATION_PAUSE_S)
 
             ## Read status(1)
             print(f"📊 [Slave ID = {slave_id}]: Status before index search")
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
             print(u.read_status(slave_id))
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
 
             ## Index search
             print(f"▶️ [Slave ID = {slave_id}]: Index search started")
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
             u.find_index(slave_id, direction=0)
             print(f"✅ [Slave ID = {slave_id}]: Index has been found")
-            time.sleep(2)
+            time.sleep(AFTER_INDEX_PAUSE_S)
 
             ## Read status(2)
             print(f"📊 [Slave ID = {slave_id}]: Status before motion")
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
             print(u.read_status(slave_id))
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
 
             print(f"✅ [Slave ID = {slave_id}]: Pre-motion settinfg completed")
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
 
         print(f"✅ BPF#{BPF_ID} setup completed!")
         
     finally:
         ## masterのclose処理
         u.close()
-        time.sleep(1.5)
+        time.sleep(CLOSE_DISPLAY_PAUSE_S)
         print("✅ Master has been closed")

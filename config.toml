@@ -5,6 +5,63 @@
 # hpf_ids は準備・停止の対象、move_order は移動の順序。
 # cutoff_side = "hpf" は下側、"lpf" は上側カットオフを担当。
 # FREQ / FRQ2 は各アクチュエーターの励振周波数 [Hz]。
+# 2026-10-04: 既存スクリプトの設定を移管。今回の作業で再測定・再調整はしていない。
+# 周波数・校正値を調整した場合は、該当HPFの近くに測定日・条件・採用理由を追記する。
+
+# 駆動値は既存のコントローラー送信単位を維持。
+[motion]
+default_velocity = 500000
+index_velocity = 50000
+acceleration = 65000
+deceleration = 65000
+encoder_resolution_um = 1.25 # 1 encoder unit当たりの移動量 [µm/eu]
+
+# 状態反映・安定化のための待ち時間。ログ表示用の待ちとは別に管理する。
+[timing]
+pdo_exchange_pause_s = 0.002
+status_poll_interval_s = 0.02
+position_settle_s = 1.0
+reset_wait_s = 3.0
+settings_apply_wait_s = 1.0
+motion_status_wait_s = 0.1
+
+# Python側の待機上限。コントローラー自身のTOU2/TOU3とは別の設定。
+[timeouts]
+default_wait_s = 30.0
+enable_s = 3.0
+index_search_s = 10.0
+index_landing_s = 5.0
+absolute_move_s = 5.0
+ethercat_state_check_us = 50000 # pysoem.state_checkのタイムアウト [µs]
+
+# 状態反映を待つPDO交換回数。周期はsleep以外に通信処理時間も含む。
+[pdo_settle]
+default_cycles = 10
+interval_s = 0.02
+after_settings_cycles = 10
+after_enable_cycles = 5
+after_index_cycles = 3
+
+# 各HPFに共通のコントローラー設定。FREQ/FRQ2はHPF別テーブルに置く。
+# 0が無効化を表す項目もあるため、変更時にはコントローラーマニュアルを確認する。
+[controller_defaults]
+ELIM = 0      # 追従誤差制限（既存設定: 無効）
+TOU2 = 10     # モーター駆動の安全タイムアウト [s]
+TOU3 = 0      # 着地タイムアウト（既存設定: 無効）
+ZON1 = 100    # zone 1幅 [eu]
+ZON2 = 1000   # zone 2幅 [eu]
+PTOL = 2      # 位置許容値 [eu]
+PTO2 = 4      # 第2位置許容値 [eu]
+ILIM = 3000   # index探索時の追従誤差しきい値
+ACTD = 0      # 駆動方向
+ENCD = 0      # encoderカウント方向
+ENCO = 0      # 原点オフセット [eu]
+LLIM = -4000  # 負側ソフトリミット [eu] = -5 mm
+HLIM = 4000   # 正側ソフトリミット [eu] = +5 mm
+PRO2 = 150    # zone 2比例ゲイン
+PROP = 350    # zone 1比例ゲイン
+INTF = 60     # 積分ゲイン
+INDA = 1      # index自動検出
 
 [receivers.B45]
 bpf_id = 1

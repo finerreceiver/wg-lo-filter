@@ -3,6 +3,12 @@ import argparse
 import time
 import math
 
+# 2026-10-04: 既存の待ち時間を用途別に命名。秒数・呼び出し順は維持。
+# DISPLAYはログを読む間隔、WAIT/AFTERは処理後の既存待ち時間。
+CONFIG_DISPLAY_PAUSE_S = 3
+STEP_DISPLAY_PAUSE_S = 2
+AFTER_MOTION_PAUSE_S = 2
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
@@ -20,26 +26,25 @@ if __name__ == "__main__":
     print(f"  central frequency : {CENTRAL_FREQ_GHZ:.3f} GHz")
     print(f"  bandwidth         : {BANDWIDTH_GHZ:.3f} GHz")
     print()
-    time.sleep(3)
+    time.sleep(CONFIG_DISPLAY_PAUSE_S)
 
     IFNAME = "eth0"
 
     u.init(IFNAME)
     try:
         u.print_section(f"BPF motion")
-        time.sleep(2)
+        time.sleep(STEP_DISPLAY_PAUSE_S)
         print("▶️  BPF making started")
         result = u.move_bpf(BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
         if result == None:
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
             pass
         else:
-            time.sleep(2)
+            time.sleep(AFTER_MOTION_PAUSE_S)
             print(f"✅ BPF#{BPF_ID} has been made")
-            time.sleep(2)
+            time.sleep(STEP_DISPLAY_PAUSE_S)
 
     finally:
         ## masterのclose処理
         u.close()
         print("✅ Master has been closed")
-

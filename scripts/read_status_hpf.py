@@ -2,6 +2,11 @@ import scripts.utils as u
 import argparse
 import time
 
+# 2026-10-04: 既存の待ち時間を用途別に命名。秒数・呼び出し順は維持。
+# DISPLAYはログを読む間隔、WAIT/AFTERは処理後の既存待ち時間。
+ENABLE_STATUS_WAIT_S = 0.5
+CLOSE_DISPLAY_PAUSE_S = 0.5
+
 if __name__ == "__main__":
 
     IFNAME = "eth0"
@@ -15,16 +20,15 @@ if __name__ == "__main__":
     u.init(IFNAME)
     try:
         u.enable(SLAVE_ID)
-        time.sleep(0.5)
+        time.sleep(ENABLE_STATUS_WAIT_S)
         print(u.read_status(SLAVE_ID))
         position_mm = u.encoder_to_mm(u.read_status(SLAVE_ID)['pos'])
         print(f"Position: {position_mm} [mm]")
     finally:
         u.close()
-        time.sleep(0.5)
+        time.sleep(CLOSE_DISPLAY_PAUSE_S)
         print("✅ Master has been closed")
 
 
            
   
-

@@ -18,6 +18,26 @@ current working directory.
 - `hpfs.<id>.A`, `B`, `X0`: coefficients for
   `position_mm = X0 - A / (cutoff_GHz - B)`.
 - `hpfs.<id>.FREQ`, `FRQ2`: actuator excitation frequencies in Hz.
+- `motion`: default/index velocity, acceleration/deceleration (existing controller
+  command units), and encoder resolution in micrometres per encoder unit.
+- `timing`: PDO exchange pauses, polling intervals, and reset/settling waits in seconds.
+- `timeouts`: Python wait limits in seconds; `ethercat_state_check_us` is in microseconds.
+- `pdo_settle`: exchange counts and pause interval used while awaiting state updates.
+- `controller_defaults`: shared controller settings, including `LLIM`/`HLIM` in
+  encoder units. Parameter transmission order is explicitly retained in the code.
+
+The values were transferred from the existing scripts on 2026-10-04 without
+retuning. When tuning a value, add the actual measurement date, conditions,
+and reason beside that entry. Commit the comment and value together.
+CLI display/post-action pauses use named constants at each script's top.
+These are distinct from the configurable controller/PDO waits.
+
+The BPF cancellation boundary retains the existing expression
+`calculated_position >= MAX_DESIRED_POSITION_MM - RESOLUTION_MM`, with
+`MAX_DESIRED_POSITION_MM = 2.5` in `utils.py`. With the current resolution,
+positions at or above 2.49875 mm are canceled; this is separate from `HLIM`.
+`move_abs_plot()` internals are unchanged. The legacy `command(delay=...)`
+argument remains unused and does not introduce a new pause.
 
 Configuration is loaded and validated when `scripts.utils` is imported.
 Restart the script or interactive Python session after editing it.

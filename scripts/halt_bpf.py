@@ -2,6 +2,10 @@ import scripts.utils as u
 import argparse
 import time
 
+# 2026-10-04: 既存の待ち時間を用途別に命名。秒数・呼び出し順は維持。
+# DISPLAYはログを読む間隔、WAIT/AFTERは処理後の既存待ち時間。
+CLOSE_DISPLAY_PAUSE_S = 0.2
+
 if __name__ == "__main__":
 
     IFNAME = "eth0"
@@ -32,7 +36,7 @@ if __name__ == "__main__":
 
     finally:
         u.close()
-        time.sleep(0.2)
+        time.sleep(CLOSE_DISPLAY_PAUSE_S)
 
            
   
