@@ -10,13 +10,41 @@ import tomllib
 master = None
 _close_registered = False
 
-DEFAULT_VEL = 500000   
-INDEX_VEL = 50000       
-ACCEL = 65000            
-DECEL = 65000
+# 固定の通信仕様。運用設定と区別し、TOMLで変更しない。
+PDO_COMMAND_FORMAT = "<4siiHHB"
+PDO_POSITION_FORMAT = "<i"
+PDO_POSITION_BYTES = struct.calcsize(PDO_POSITION_FORMAT)
+PDO_STATUS_BYTES = 3
+COMMAND_NAME_BYTES = 4
+EXECUTE_PREPARE = 0
+EXECUTE_RUN = 1
+MM_PER_UM = 1e-3
+SIGNED_INT32_MIN = -(2 ** 31)
+SIGNED_INT32_MAX = 2 ** 31 - 1
+UNSIGNED_INT16_MAX = 2 ** 16 - 1
 
-POLL_DT = 0.02
-SETTLE_TIME = 1.0
+# Python側BPF判定は既存の >= 2.5 - RESOLUTION_MM を維持する。
+# これはコントローラーのHLIMとは別の運用制限。
+MAX_DESIRED_POSITION_MM = 2.5
+INDEX_RESULT_DISPLAY_PAUSE_S = 1.0 # 原点探索結果を読むための表示待ち
+LEGACY_UNUSED_COMMAND_DELAY_S = 0.02 # 現在command()はこの引数を使用しない
+RECORD_POLL_INTERVAL_S = 0.005 # 診断ログの既存取得周期
+
+# 送信順はプロトコル手順としてコードに保持。値はTOMLから取得する。
+CONTROLLER_PARAMETER_ORDER = (
+    "ELIM", "TOU2", "TOU3", "ZON1", "ZON2", "PTOL", "PTO2", "ILIM",
+    "ACTD", "ENCD", "ENCO", "LLIM", "HLIM", "PRO2", "PROP", "INTF", "INDA",
+)
+STATUS_BITS = {
+    "enabled": 0, "end_stop": 1, "thermal_protection1": 2,
+    "thermal_protection2": 3, "force_zero": 4, "motor_on": 5,
+    "closed_loop": 6, "encoder_index": 7, "encoder_valid": 8,
+    "searching_index": 9, "position_reached": 10, "error_compensation": 11,
+    "encoder_error": 12, "scanning": 13, "left_end_stop": 14,
+    "right_end_stop": 15, "error_limit": 16, "searching_optimal_freq": 17,
+    "safety_timeout": 18, "ecat_ack": 19, "emergency_stop": 20,
+    "position_fail": 21,
+}
 
 # =========================
 # Actuator Parameter
@@ -32,6 +60,48 @@ def load_config(path=CONFIG_PATH):
         config = tomllib.load(file)
 
     try:
+        # 数値の型・有限性とPDOに収まる範囲を通信開始前に検査する。
+        positive_fields = {
+            "motion": ("default_velocity", "index_velocity", "acceleration",
+                       "deceleration", "encoder_resolution_um"),
+            "timing": ("status_poll_interval_s",),
+            "timeouts": ("default_wait_s", "enable_s", "index_search_s",
+                         "index_landing_s", "absolute_move_s", "ethercat_state_check_us"),
+            "pdo_settle": ("default_cycles", "interval_s", "after_settings_cycles",
+                           "after_enable_cycles", "after_index_cycles"),
+        }
+        nonnegative_timing = ("pdo_exchange_pause_s", "position_settle_s", "reset_wait_s",
+                              "settings_apply_wait_s", "motion_status_wait_s")
+        for section, keys in positive_fields.items():
+            for key in keys:
+                value = config[section][key]
+                if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+                    raise ValueError(f"{section}.{key} must be a positive finite number")
+        for key in nonnegative_timing:
+            value = config["timing"][key]
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError(f"timing.{key} must be a nonnegative finite number")
+        for key, maximum in (("default_velocity", SIGNED_INT32_MAX),
+                             ("index_velocity", SIGNED_INT32_MAX),
+                             ("acceleration", UNSIGNED_INT16_MAX),
+                             ("deceleration", UNSIGNED_INT16_MAX)):
+            value = config["motion"][key]
+            if type(value) is not int or value > maximum:
+                raise ValueError(f"motion.{key} must be an integer <= {maximum}")
+        for key in ("default_cycles", "after_settings_cycles", "after_enable_cycles", "after_index_cycles"):
+            if type(config["pdo_settle"][key]) is not int:
+                raise ValueError(f"pdo_settle.{key} must be an integer")
+        if type(config["timeouts"]["ethercat_state_check_us"]) is not int:
+            raise ValueError("timeouts.ethercat_state_check_us must be an integer")
+        defaults = config["controller_defaults"]
+        for key in CONTROLLER_PARAMETER_ORDER:
+            value = defaults[key]
+            if type(value) is not int or not SIGNED_INT32_MIN <= value <= SIGNED_INT32_MAX:
+                raise ValueError(f"controller_defaults.{key} must be a signed 32-bit integer")
+        if set(defaults) != set(CONTROLLER_PARAMETER_ORDER):
+            raise ValueError("Unknown controller_defaults parameter")
+        if defaults["LLIM"] >= defaults["HLIM"]:
+            raise ValueError("LLIM must be smaller than HLIM")
         hpfs = config["hpfs"]
         bpfs = config["bpfs"]
         receivers = config["receivers"]
@@ -48,8 +118,8 @@ def load_config(path=CONFIG_PATH):
             if hpf["cutoff_side"] not in ("hpf", "lpf"):
                 raise ValueError(f"HPF #{hpf_id}: cutoff_side must be hpf or lpf")
             for key in ("FREQ", "FRQ2"):
-                if type(hpf[key]) is not int or hpf[key] <= 0:
-                    raise ValueError(f"HPF #{hpf_id}: {key} must be a positive integer")
+                if type(hpf[key]) is not int or not 0 < hpf[key] <= SIGNED_INT32_MAX:
+                    raise ValueError(f"HPF #{hpf_id}: {key} must be a positive signed 32-bit integer")
             for key in ("A", "B", "X0"):
                 value = hpf[key]
                 if type(value) not in (int, float) or not math.isfinite(value):
@@ -85,6 +155,28 @@ def load_config(path=CONFIG_PATH):
 
 
 CONFIG = load_config()
+# 既存の公開定数名を維持。値はimport時に設定から一度読み込む。
+DEFAULT_VEL = CONFIG["motion"]["default_velocity"]
+INDEX_VEL = CONFIG["motion"]["index_velocity"]
+ACCEL = CONFIG["motion"]["acceleration"]
+DECEL = CONFIG["motion"]["deceleration"]
+POLL_DT = CONFIG["timing"]["status_poll_interval_s"]
+SETTLE_TIME = CONFIG["timing"]["position_settle_s"]
+PDO_EXCHANGE_PAUSE_S = CONFIG["timing"]["pdo_exchange_pause_s"]
+RESET_WAIT_S = CONFIG["timing"]["reset_wait_s"]
+SETTINGS_APPLY_WAIT_S = CONFIG["timing"]["settings_apply_wait_s"]
+MOTION_STATUS_WAIT_S = CONFIG["timing"]["motion_status_wait_s"]
+DEFAULT_WAIT_TIMEOUT_S = CONFIG["timeouts"]["default_wait_s"]
+ENABLE_TIMEOUT_S = CONFIG["timeouts"]["enable_s"]
+INDEX_SEARCH_TIMEOUT_S = CONFIG["timeouts"]["index_search_s"]
+INDEX_LANDING_TIMEOUT_S = CONFIG["timeouts"]["index_landing_s"]
+ABSOLUTE_MOVE_TIMEOUT_S = CONFIG["timeouts"]["absolute_move_s"]
+ETHERCAT_STATE_CHECK_TIMEOUT_US = CONFIG["timeouts"]["ethercat_state_check_us"]
+PDO_SETTLE_CYCLES = CONFIG["pdo_settle"]["default_cycles"]
+PDO_SETTLE_INTERVAL_S = CONFIG["pdo_settle"]["interval_s"]
+AFTER_SETTINGS_PDO_CYCLES = CONFIG["pdo_settle"]["after_settings_cycles"]
+AFTER_ENABLE_PDO_CYCLES = CONFIG["pdo_settle"]["after_enable_cycles"]
+AFTER_INDEX_PDO_CYCLES = CONFIG["pdo_settle"]["after_index_cycles"]
 BPF_IDS = tuple(sorted(int(i) for i in CONFIG["bpfs"]))
 BPF_B45 = CONFIG["receivers"]["B45"]["bpf_id"]
 BPF_B67 = CONFIG["receivers"]["B67"]["bpf_id"]
@@ -130,8 +222,8 @@ SLAVE_ID_HPF_4 = CONFIG["hpfs"]["4"]["slave_id"]
 SLAVE_ID_HPF_5 = CONFIG["hpfs"]["5"]["slave_id"]
 SLAVE_ID_HPF_6 = CONFIG["hpfs"]["6"]["slave_id"]
 
-RESOLUTION_UM = 1.25
-RESOLUTION_MM = RESOLUTION_UM * 1e-3
+RESOLUTION_UM = CONFIG["motion"]["encoder_resolution_um"]
+RESOLUTION_MM = RESOLUTION_UM * MM_PER_UM
 
 
 def encoder_to_mm(position_encoder):
@@ -186,13 +278,13 @@ def init(ifname):
 
     master.config_map()
 
-    master.state_check(pysoem.SAFEOP_STATE, timeout=50000)
+    master.state_check(pysoem.SAFEOP_STATE, timeout=ETHERCAT_STATE_CHECK_TIMEOUT_US)
     if master.state != pysoem.SAFEOP_STATE:
         raise RuntimeError("Failed to reach EtherCAT SAFEOP_STATE")
 
     master.state = pysoem.OP_STATE
     master.write_state()
-    master.state_check(pysoem.OP_STATE, timeout=50000)
+    master.state_check(pysoem.OP_STATE, timeout=ETHERCAT_STATE_CHECK_TIMEOUT_US)
     if master.state != pysoem.OP_STATE:
         raise RuntimeError("Failed to reach EtherCAT OP_STATE")
 
@@ -210,7 +302,7 @@ def send_cmd(slave_id, cmd_bytes, execute, v1=0, v2=0, v3=0, v4=0):
       execute   : 0 -> prepare, 1 -> execute
     """
     payload = struct.pack(
-        "<4siiHHB",
+        PDO_COMMAND_FORMAT,
         cmd_bytes,
         int(v1),
         int(v2),
@@ -225,20 +317,21 @@ def send_cmd(slave_id, cmd_bytes, execute, v1=0, v2=0, v3=0, v4=0):
 def trig():
     master.send_processdata()
     master.receive_processdata()
-    time.sleep(0.002)
+    time.sleep(PDO_EXCHANGE_PAUSE_S)
     
 
 
-def command(slave_id, cmd_bytes, v1=0, v2=0, v3=0, v4=0, delay=0.02):
+def command(slave_id, cmd_bytes, v1=0, v2=0, v3=0, v4=0, delay=LEGACY_UNUSED_COMMAND_DELAY_S):
     """
     Xeryon EtherCAT commands are sent in two steps:
       1. execute = 0
       2. execute = 1
+    delay is retained for compatibility and is currently unused.
     """
-    send_cmd(slave_id, cmd_bytes, 0, v1, v2, v3, v4)
+    send_cmd(slave_id, cmd_bytes, EXECUTE_PREPARE, v1, v2, v3, v4)
     trig()
 
-    send_cmd(slave_id, cmd_bytes, 1, v1, v2, v3, v4)
+    send_cmd(slave_id, cmd_bytes, EXECUTE_RUN, v1, v2, v3, v4)
     trig()
 
 
@@ -250,34 +343,13 @@ def read_status(slave_id):
 
     data = master.slaves[slave_id].input
 
-    actual_position = struct.unpack("<i", data[0:4])[0]
-    status = int.from_bytes(data[4:7], "little")
+    actual_position = struct.unpack(PDO_POSITION_FORMAT, data[:PDO_POSITION_BYTES])[0]
+    status = int.from_bytes(data[PDO_POSITION_BYTES:PDO_POSITION_BYTES + PDO_STATUS_BYTES], "little")
 
     return {
         "pos": actual_position,
 
-        "enabled": bool((status >> 0) & 1),
-        "end_stop": bool((status >> 1) & 1),
-        "thermal_protection1": bool((status >> 2) & 1),
-        "thermal_protection2": bool((status >> 3) & 1),
-        "force_zero": bool((status >> 4) & 1),
-        "motor_on": bool((status >> 5) & 1),
-        "closed_loop": bool((status >> 6) & 1),
-        "encoder_index": bool((status >> 7) & 1),
-        "encoder_valid": bool((status >> 8) & 1),
-        "searching_index": bool((status >> 9) & 1),
-        "position_reached": bool((status >> 10) & 1),
-        "error_compensation": bool((status >> 11) & 1),
-        "encoder_error": bool((status >> 12) & 1),
-        "scanning": bool((status >> 13) & 1),
-        "left_end_stop": bool((status >> 14) & 1),
-        "right_end_stop": bool((status >> 15) & 1),
-        "error_limit": bool((status >> 16) & 1),
-        "searching_optimal_freq": bool((status >> 17) & 1),
-        "safety_timeout": bool((status >> 18) & 1),
-        "ecat_ack": bool((status >> 19) & 1),
-        "emergency_stop": bool((status >> 20) & 1),
-        "position_fail": bool((status >> 21) & 1),
+        **{name: bool((status >> bit) & 1) for name, bit in STATUS_BITS.items()},
 
         "status_raw": hex(status),
     }
@@ -296,7 +368,7 @@ def has_error(st):
     )
 
 
-def wait_until(slave_id, condition, timeout=30.0, label="condition"):
+def wait_until(slave_id, condition, timeout=DEFAULT_WAIT_TIMEOUT_S, label="condition"):
     t0 = time.time()
 
     while time.time() - t0 < timeout:
@@ -323,7 +395,7 @@ def enable(slave_id):
       - also recovers from errors
     """
     command(slave_id, b"ENBL", v1=1)
-    wait_until(slave_id, lambda st: st["enabled"], timeout=3.0, label="enabled")
+    wait_until(slave_id, lambda st: st["enabled"], timeout=ENABLE_TIMEOUT_S, label="enabled")
     trig()
 
 
@@ -363,13 +435,13 @@ def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
     # INDX の直後は PDO の状態反映に数周期かかることがある。
     # 公式ライブラリと同様に数回更新を待ってから、探索が原点未検出の
     # まま終了していないか確認する。
-    for _ in range(3):
+    for _ in range(AFTER_INDEX_PDO_CYCLES):
         time.sleep(POLL_DT)
         st = read_status(slave_id)
 
     t0 = time.time()
-    while time.time() - t0 < 10.0:
-        st = read_status(slave_id) #1.0s
+    while time.time() - t0 < INDEX_SEARCH_TIMEOUT_S:
+        st = read_status(slave_id)
 
         if has_error(st):
             raise RuntimeError(f"Controller error while waiting for index: {st}")
@@ -393,14 +465,14 @@ def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
     wait_until(
         slave_id,
         lambda st: st["position_reached"],
-        timeout=5.0,
+        timeout=INDEX_LANDING_TIMEOUT_S,
         label="position_reached after index",
     )
 
     time.sleep(SETTLE_TIME)
     st = read_status(slave_id)
     print("Index found:", st)
-    time.sleep(1)
+    time.sleep(INDEX_RESULT_DISPLAY_PAUSE_S)
     return st
 
 def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
@@ -417,7 +489,7 @@ def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
         raise RuntimeError("Index is not found yet. Run find_index() first.")
 
     command(slave_id, b"DPOS", v1=target_pos, v2=vel, v3=accel, v4=decel)
-    time.sleep(0.1)
+    time.sleep(MOTION_STATUS_WAIT_S)
     # wait_until(
     #     slave_id,
     #     lambda s: (not s["position_reached"]) or s["motor_on"],
@@ -428,7 +500,7 @@ def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     st = wait_until(
         slave_id,
         lambda s: s["position_reached"] and not s["motor_on"],
-        timeout=5.0,
+        timeout=ABSOLUTE_MOVE_TIMEOUT_S,
         label=f"position_reached target={target_pos}",
     )
 
@@ -455,8 +527,8 @@ def scan(slave_id, direction, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
 def stop_scan(slave_id):
     scan(slave_id, direction=0)
 
-def set_param(slave_id, param_name, value, delay=0.02):
-    if len(param_name) != 4:
+def set_param(slave_id, param_name, value, delay=LEGACY_UNUSED_COMMAND_DELAY_S):
+    if len(param_name) != COMMAND_NAME_BYTES:
         raise ValueError("param_name must be 4 characters, e.g. 'PROP', 'FREQ'")
 
     cmd_bytes = param_name.encode("ascii")
@@ -476,34 +548,18 @@ def apply_default_settings(slave_id, bpf_id=None, ecat_ack_check=False):
     hpf = CONFIG["hpfs"][str(get_hpf_id_for_slave(slave_id))]
     freq, frq2 = hpf["FREQ"], hpf["FRQ2"]
 
-    for param_name, value in [
+    parameters = [
         ("FREQ", freq),
         ("FRQ2", frq2),
-        ("ELIM", 0),
-        ("TOU2", 10),
-        ("TOU3", 0),
-        ("ZON1", 100),
-        ("ZON2", 1000),
-        ("PTOL", 2),
-        ("PTO2", 4),
-        ("ILIM", 3000),
-        ("ACTD", 0),
-        ("ENCD", 0),
-        ("ENCO", 0),
-        ("LLIM", -4000),
-        ("HLIM", 4000),
-        ("PRO2", 150),
-        ("PROP", 350),
-        ("INTF", 60),
-        ("INDA", 1),
-    ]:
+    ] + [(name, CONFIG["controller_defaults"][name]) for name in CONTROLLER_PARAMETER_ORDER]
+    for param_name, value in parameters:
         set_param(slave_id, param_name, value)
         if ecat_ack_check:
             print(read_status(slave_id)['ecat_ack'])
-    time.sleep(1)
+    time.sleep(SETTINGS_APPLY_WAIT_S)
 
 
-def pdo_settle(cycles=10, dt=0.02):
+def pdo_settle(cycles=PDO_SETTLE_CYCLES, dt=PDO_SETTLE_INTERVAL_S):
     """Exchange PDOs for several cycles so the preceding command can settle."""
     for _ in range(cycles):
         trig()
@@ -520,13 +576,13 @@ def prepare_actuator(slave_id, bpf_id=None):
     if bpf_id is not None and bpf_id != configured_bpf:
         raise ValueError(f"Slave {slave_id} belongs to BPF #{configured_bpf}, not #{bpf_id}")
     reset(slave_id)
-    time.sleep(3)
+    time.sleep(RESET_WAIT_S)
 
     apply_default_settings(slave_id, bpf_id=bpf_id)
-    pdo_settle(cycles=10, dt=0.02)
+    pdo_settle(cycles=AFTER_SETTINGS_PDO_CYCLES, dt=PDO_SETTLE_INTERVAL_S)
     
     enable(slave_id)
-    pdo_settle(cycles=5, dt=0.02)
+    pdo_settle(cycles=AFTER_ENABLE_PDO_CYCLES, dt=PDO_SETTLE_INTERVAL_S)
 
 
 def save_rows_csv(rows, csv_path):
@@ -553,8 +609,8 @@ def record_until(
     stop_condition,
     csv_path="motion_log.csv",
     target_pos=None,
-    poll_dt=0.005,
-    timeout=30.0,
+    poll_dt=RECORD_POLL_INTERVAL_S,
+    timeout=DEFAULT_WAIT_TIMEOUT_S,
 ):
     """
     駆動中のPDO入力を読み続けてCSV保存する関数。
@@ -1150,7 +1206,7 @@ def move_bpf(
 
     # soft limit
     if any(
-        calculated_position >= 2.5 - RESOLUTION_MM
+        calculated_position >= MAX_DESIRED_POSITION_MM - RESOLUTION_MM
         for _, _, calculated_position in actuator_list
     ):
         print("🔴 Motion canceled")
