@@ -1,4 +1,7 @@
 import scripts.utils as u
+from scripts.logging_utils import add_logging_arguments, configure_logging, get_logger
+
+logger = get_logger("move_bpf")
 import argparse
 import time
 import math
@@ -15,17 +18,19 @@ if __name__ == "__main__":
     parser.add_argument("--bpf_ID", type=int, choices=u.BPF_IDS, required=True)
     parser.add_argument("--central_freq", type=float, required=True)
     parser.add_argument("--band_width", type=float, required=True)
+    add_logging_arguments(parser)
     args = parser.parse_args()
+    configure_logging(args.log_level)
 
     BPF_ID = args.bpf_ID
     CENTRAL_FREQ_GHZ = args.central_freq
     BANDWIDTH_GHZ = args.band_width
 
     u.print_section("BPF configuration")
-    print(f"  BPF ID     : #{BPF_ID}")
-    print(f"  central frequency : {CENTRAL_FREQ_GHZ:.3f} GHz")
-    print(f"  bandwidth         : {BANDWIDTH_GHZ:.3f} GHz")
-    print()
+    logger.info(f"  BPF ID     : #{BPF_ID}")
+    logger.info(f"  central frequency : {CENTRAL_FREQ_GHZ:.3f} GHz")
+    logger.info(f"  bandwidth         : {BANDWIDTH_GHZ:.3f} GHz")
+    logger.debug("")
     time.sleep(CONFIG_DISPLAY_PAUSE_S)
 
     IFNAME = "eth0"
@@ -34,17 +39,17 @@ if __name__ == "__main__":
     try:
         u.print_section(f"BPF motion")
         time.sleep(STEP_DISPLAY_PAUSE_S)
-        print("▶️  BPF making started")
+        logger.info("▶️  BPF making started")
         result = u.move_bpf(BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
         if result == None:
             time.sleep(STEP_DISPLAY_PAUSE_S)
             pass
         else:
             time.sleep(AFTER_MOTION_PAUSE_S)
-            print(f"✅ BPF#{BPF_ID} has been made")
+            logger.info(f"✅ BPF#{BPF_ID} has been made")
             time.sleep(STEP_DISPLAY_PAUSE_S)
 
     finally:
         ## masterのclose処理
         u.close()
-        print("✅ Master has been closed")
+        logger.info("✅ Master has been closed")

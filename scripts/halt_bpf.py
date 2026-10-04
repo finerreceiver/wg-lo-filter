@@ -1,4 +1,7 @@
 import scripts.utils as u
+from scripts.logging_utils import add_logging_arguments, configure_logging, get_logger
+
+logger = get_logger("halt_bpf")
 import argparse
 import time
 
@@ -12,7 +15,9 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--bpf_ID", type=int, choices=u.BPF_IDS, required=True)
+    add_logging_arguments(parser)
     args = parser.parse_args()
+    configure_logging(args.log_level)
 
     BPF_ID = args.bpf_ID
     u.init(IFNAME)
@@ -20,17 +25,17 @@ if __name__ == "__main__":
     try:
         slave_list = u.get_bpf_slave_ids(BPF_ID)
 
-        print("▶️ We'll halt the actuators")
-        print("📊 Status before HALT")
+        logger.info("▶️ We'll halt the actuators")
+        logger.info("📊 Status before HALT")
         for SLAVE_ID in slave_list:
-            print(f"📊 [Slave ID = {SLAVE_ID}]: Status before halt")
-            print(u.read_status(SLAVE_ID))
+            logger.info(f"📊 [Slave ID = {SLAVE_ID}]: Status before halt")
+            logger.debug(u.read_status(SLAVE_ID))
 
         u.halt_bpf(BPF_ID)
 
         for SLAVE_ID in slave_list:
-            print(f"📊 [Slave ID = {SLAVE_ID}]: Status after halt")
-            print(u.read_status(SLAVE_ID))
+            logger.info(f"📊 [Slave ID = {SLAVE_ID}]: Status after halt")
+            logger.debug(u.read_status(SLAVE_ID))
         
         # motor_on bit を読み込んでHALTが成功したか判定したいね
 

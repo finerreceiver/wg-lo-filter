@@ -6,6 +6,9 @@ import math
 import numpy as np
 from pathlib import Path
 import tomllib
+from scripts.logging_utils import get_logger
+
+logger = get_logger("utils")
 
 master = None
 _close_registered = False
@@ -288,7 +291,7 @@ def init(ifname):
     if master.state != pysoem.OP_STATE:
         raise RuntimeError("Failed to reach EtherCAT OP_STATE")
 
-    print("Master is in OP_STATE")
+    logger.info("Master is in OP_STATE")
 
 
 def send_cmd(slave_id, cmd_bytes, execute, v1=0, v2=0, v3=0, v4=0):
@@ -471,7 +474,8 @@ def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
 
     time.sleep(SETTLE_TIME)
     st = read_status(slave_id)
-    print("Index found:", st)
+    logger.info("Index found for slave %s", slave_id)
+    logger.debug("Index status: %s", st)
     time.sleep(INDEX_RESULT_DISPLAY_PAUSE_S)
     return st
 
@@ -507,7 +511,7 @@ def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     time.sleep(SETTLE_TIME)
     st = read_status(slave_id)
 
-    print(f"Target={target_pos}, Actual={st['pos']}, Error={st['pos'] - target_pos}")
+    logger.info(f"Target={target_pos}, Actual={st['pos']}, Error={st['pos'] - target_pos}")
     return st
 
 def scan(slave_id, direction, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
@@ -555,7 +559,8 @@ def apply_default_settings(slave_id, bpf_id=None, ecat_ack_check=False):
     for param_name, value in parameters:
         set_param(slave_id, param_name, value)
         if ecat_ack_check:
-            print(read_status(slave_id)['ecat_ack'])
+            logger.debug("Slave %s / %s: ecat_ack=%s", slave_id, param_name,
+                         read_status(slave_id)['ecat_ack'])
     time.sleep(SETTINGS_APPLY_WAIT_S)
 
 
@@ -591,7 +596,7 @@ def save_rows_csv(rows, csv_path):
     csv_path: 保存先CSV
     """
     if len(rows) == 0:
-        print("No data to save.")
+        logger.warning("No data to save.")
         return
 
     fieldnames = list(rows[0].keys())
@@ -601,7 +606,7 @@ def save_rows_csv(rows, csv_path):
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"Saved: {csv_path}  ({len(rows)} samples)")
+    logger.info(f"Saved: {csv_path}  ({len(rows)} samples)")
 
 
 def record_until(
@@ -894,7 +899,7 @@ def plot_motion_log_encoder(csv_path, save_path=None, smooth_window=1):
 
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"Saved figure: {save_path}")
+        logger.info(f"Saved figure: {save_path}")
 
     plt.show()
 
@@ -1033,12 +1038,10 @@ def move_abs_plot(
 
     final_error = st["pos"] - target_pos
 
-    print(
-        f"Target={target_pos}, "
+    logger.info(f"Target={target_pos}, "
         f"Actual={st['pos']}, "
-        f"Error={final_error} encoder unit"
-    )
-    print(f"Saved log: {csv_path}")
+        f"Error={final_error} encoder unit")
+    logger.info(f"Saved log: {csv_path}")
 
     # ==========================
     # plot automatically
@@ -1059,7 +1062,7 @@ def dpos(slaveId, target_pos_mm, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     move_abs(slaveId, target_pos_encoder, vel, accel, decel)
     apos_encoder = read_status(slaveId)["pos"]
     apos_mm = encoder_to_mm(apos_encoder)
-    print(f"APOS = {apos_mm:.5f} mm")
+    logger.info(f"APOS = {apos_mm:.5f} mm")
 
 def calc_pos_mm_from_fcut(f_cut_GHz, A, B, X0):
     if f_cut_GHz == B:
@@ -1124,9 +1127,9 @@ def halt_bpf(bpf_id):
     for name, slave_id in actuator_list:
         try:
             halt(slave_id)
-            print(f"✅ {name} halted")
+            logger.info(f"✅ {name} halted")
         except Exception as error:
-            print(f"🔴 {name} could not be halted: {error}")
+            logger.error(f"🔴 {name} could not be halted: {error}")
 
 
 def print_bpf_movement_result(name, slave_id, calculated_position_mm, status):
@@ -1134,16 +1137,16 @@ def print_bpf_movement_result(name, slave_id, calculated_position_mm, status):
     actual_position_mm = encoder_to_mm(status["pos"])
     error_encoder = (actual_position_mm - calculated_position_mm)/RESOLUTION_MM
 
-    print()
-    print(f"🔵 {name} movement result")
-    print(f"Slave ID            = {slave_id}")
-    print(f"Target position     = {calculated_position_mm:.8f} mm")
-    print(f"Input position      = {target_position_mm:.5f} mm")
-    print(f"Actual position     = {actual_position_mm:.5f} mm")
-    print(f"Actual - Target     = {error_encoder:.1f} eu")
-    print("Full status =")
-    print(status)
-    print(status["status_raw"])
+    logger.debug("")
+    logger.info(f"🔵 {name} movement result")
+    logger.info(f"Slave ID            = {slave_id}")
+    logger.info(f"Target position     = {calculated_position_mm:.8f} mm")
+    logger.info(f"Input position      = {target_position_mm:.5f} mm")
+    logger.info(f"Actual position     = {actual_position_mm:.5f} mm")
+    logger.info(f"Actual - Target     = {error_encoder:.1f} eu")
+    logger.debug("Full status =")
+    logger.debug(status)
+    logger.debug(status["status_raw"])
 
     return {
         "slaveId": slave_id,
@@ -1187,29 +1190,27 @@ def move_bpf(
         status_before[name] = check_bpf_actuator_ready(name, slave_id)
 
     ## pre-motion setting check
-    print(f"🔵 BPF #{bpf_id} setting")
-    print(f"Center frequency = {positions['central_frequency_GHz']:.5f} GHz")
-    print(f"Bandwidth        = {positions['bandwidth_GHz']:.5f} GHz")
-    print(f"HPF cutoff       = {positions['HPF_cutoff_GHz']:.5f} GHz")
-    print(f"LPF cutoff       = {positions['LPF_cutoff_GHz']:.5f} GHz")
-    print()
+    logger.info(f"🔵 BPF #{bpf_id} setting")
+    logger.info(f"Center frequency = {positions['central_frequency_GHz']:.5f} GHz")
+    logger.info(f"Bandwidth        = {positions['bandwidth_GHz']:.5f} GHz")
+    logger.info(f"HPF cutoff       = {positions['HPF_cutoff_GHz']:.5f} GHz")
+    logger.info(f"LPF cutoff       = {positions['LPF_cutoff_GHz']:.5f} GHz")
+    logger.debug("")
 
-    print("🔵 Actuator movement preview")
+    logger.info("🔵 Actuator movement preview")
     for name, slave_id, calculated_position in actuator_list:
         current_position = encoder_to_mm(status_before[name]["pos"])
-        print(
-            f"{name} / slave {slave_id}: "
-            f"current {current_position:.5f} mm -> target {calculated_position:.5f} mm"
-        )
+        logger.info(f"{name} / slave {slave_id}: "
+            f"current {current_position:.5f} mm -> target {calculated_position:.5f} mm")
 
-    print()
+    logger.debug("")
 
     # soft limit
     if any(
         calculated_position >= MAX_DESIRED_POSITION_MM - RESOLUTION_MM
         for _, _, calculated_position in actuator_list
     ):
-        print("🔴 Motion canceled")
+        logger.warning("🔴 Motion canceled")
         return None
 
     try:
@@ -1217,7 +1218,7 @@ def move_bpf(
         for name, slave_id, calculated_position in actuator_list:
             dpos(slave_id, calculated_position, vel=vel, accel=accel, decel=decel)
     except Exception:
-        print("🔴 移動中にエラーが発生しました。")
+        logger.error("🔴 移動中にエラーが発生しました。")
         raise
 
     result = {
@@ -1254,4 +1255,4 @@ def close():
         master = None
 
 def print_section(title):
-    print(f"\n{'═' * 72}\n  {title}\n{'═' * 72}")
+    logger.info("%s", title)
