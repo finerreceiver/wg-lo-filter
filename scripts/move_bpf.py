@@ -6,7 +6,7 @@ import math
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bpf_ID", type=int, choices=[1, 2], required=True)
+    parser.add_argument("--bpf_ID", type=int, choices=u.BPF_IDS, required=True)
     parser.add_argument("--central_freq", type=float, required=True)
     parser.add_argument("--band_width", type=float, required=True)
     args = parser.parse_args()
@@ -42,5 +42,4 @@ if __name__ == "__main__":
         ## masterのclose処理
         u.close()
         print("✅ Master has been closed")
-
 

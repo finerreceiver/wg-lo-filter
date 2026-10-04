@@ -1,0 +1,81 @@
+# 受信機、BPF、HPF、EtherCAT Slave ID の対応と位置計算用の校正係数。
+# HPF ID は1始まり、EtherCAT Slave ID は0始まり。
+# 位置計算式: position_mm = X0 - A / (cutoff_GHz - B)
+# B は GHz、X0 は mm、A は GHz * mm。
+# hpf_ids は準備・停止の対象、move_order は移動の順序。
+# cutoff_side = "hpf" は下側、"lpf" は上側カットオフを担当。
+# FREQ / FRQ2 は各アクチュエーターの励振周波数 [Hz]。
+
+[receivers.B45]
+bpf_id = 1
+
+[receivers.B67]
+bpf_id = 2
+
+[bpfs."1"]
+hpf_ids = [1, 2, 3]
+move_order = [2, 3, 1]
+
+[bpfs."2"]
+hpf_ids = [4, 5, 6]
+move_order = [4, 6, 5]
+
+# HPF #1単体の−3 dB fitting結果（2026年8月4日測定）。
+[hpfs."1"]
+slave_id = 0
+cutoff_side = "hpf"
+FREQ = 172000
+FRQ2 = 170000
+A = 140.96792648249118
+B = 3.2159676191402906
+X0 = 3.3405032839438187
+
+# LPF #1 / HPF #2（2026年8月5日測定、70 GHzの測定点を除外）。
+[hpfs."2"]
+slave_id = 1
+cutoff_side = "lpf"
+FREQ = 172000
+FRQ2 = 169000
+A = 139.77990996621924
+B = 4.146514102344519
+X0 = 3.6831305389197464
+
+# LPF #1 / HPF #3（2026年8月5日測定、70 GHzの測定点を除外）。
+[hpfs."3"]
+slave_id = 2
+cutoff_side = "lpf"
+FREQ = 173000
+FRQ2 = 170000
+A = 150.00098052196947
+B = 1.3454350285068244
+X0 = 3.424692246476261
+
+# LPF #2 / HPF #4。
+[hpfs."4"]
+slave_id = 3
+cutoff_side = "lpf"
+FREQ = 174000
+FRQ2 = 171000
+A = 134.2169506476309
+B = 6.079161691165807
+X0 = 2.562860947465932
+
+# HPF #5単体。
+[hpfs."5"]
+slave_id = 4
+cutoff_side = "hpf"
+FREQ = 172000
+FRQ2 = 169000
+A = 154.6067528526659
+B = -0.7844167254033043
+X0 = 3.0330052831635563
+
+# LPF #2 / HPF #6。
+[hpfs."6"]
+slave_id = 5
+cutoff_side = "lpf"
+FREQ = 173000
+FRQ2 = 169000
+A = 127.51463334495108
+B = 8.130669597652863
+X0 = 2.760685100749963

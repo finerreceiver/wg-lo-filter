@@ -7,17 +7,14 @@ if __name__ == "__main__":
     IFNAME = "eth0"
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bpf_ID", type=int, choices=[1, 2], required=True)
+    parser.add_argument("--bpf_ID", type=int, choices=u.BPF_IDS, required=True)
     args = parser.parse_args()
 
     BPF_ID = args.bpf_ID
     u.init(IFNAME)
 
     try:
-        if BPF_ID == 1:
-            slave_list = [u.SLAVE_ID_HPF_1, u.SLAVE_ID_HPF_2, u.SLAVE_ID_HPF_3]
-        if BPF_ID == 2:
-            slave_list = [u.SLAVE_ID_HPF_4, u.SLAVE_ID_HPF_5, u.SLAVE_ID_HPF_6]
+        slave_list = u.get_bpf_slave_ids(BPF_ID)
 
         print("▶️ We'll halt the actuators")
         print("📊 Status before HALT")
@@ -39,4 +36,3 @@ if __name__ == "__main__":
 
            
   
-
