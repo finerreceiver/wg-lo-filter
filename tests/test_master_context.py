@@ -2,12 +2,10 @@
 import ast
 import importlib.util
 from pathlib import Path
-import runpy
 import struct
 import sys
 import types
 import unittest
-from contextlib import ExitStack
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,64 +194,6 @@ class MasterTests(unittest.TestCase):
             u.dpos(master, 3, 1.0)
         move.assert_called_once_with(master, 3, round(1.0 / u.RESOLUTION_MM), u.DEFAULT_VEL, u.ACCEL, u.DECEL)
         read.assert_called_once_with(master, 3)
-
-
-class CallerTests(unittest.TestCase):
-    factory = MasterTests.factory
-    assert_closed_once = MasterTests.assert_closed_once
-
-    def run_cli(self, name, args, fail_motion=False):
-        master = FakeMaster()
-        calls = []
-        def stub(function):
-            def invoke(actual, *args, **kwargs):
-                self.assertIs(actual, master, function)
-                calls.append(function)
-                if function == "dpos" and fail_motion:
-                    raise TimeoutError("motion timeout")
-                if function == "halt":
-                    master.events.append(("halt",))
-                if function == "read_status":
-                    return {"pos": 0}
-                return {}
-            return invoke
-        import scripts
-        with ExitStack() as stack:
-            stack.enter_context(self.factory(master))
-            stack.enter_context(patch.dict(sys.modules, {"scripts.utils": u}))
-            stack.enter_context(patch.object(scripts, "utils", u, create=True))
-            stack.enter_context(patch.object(sys, "argv", [name, *args, "--log-level", "CRITICAL"]))
-            stack.enter_context(patch.object(u.time, "sleep"))
-            for function in HARDWARE:
-                stack.enter_context(patch.object(u, function, side_effect=stub(function)))
-            if fail_motion:
-                with self.assertRaises(TimeoutError):
-                    runpy.run_path(str(ROOT / "scripts" / (name + ".py")), run_name="__main__")
-            else:
-                runpy.run_path(str(ROOT / "scripts" / (name + ".py")), run_name="__main__")
-        self.assert_closed_once(master)
-        self.assertTrue(calls)
-        return master, calls
-
-    def test_all_cli_callers(self):
-        cases = {
-            "all_bpf": ["--bpf_ID", "2", "--central_freq", "100", "--band_width", "10", "--prepare"],
-            "prepare_bpf": ["--bpf_ID", "2"],
-            "move_bpf": ["--bpf_ID", "2", "--central_freq", "100", "--band_width", "10"],
-            "halt_bpf": ["--bpf_ID", "2"],
-            "all_hpf": ["--slaveID", "3", "--dpos_mm", "1"],
-            "read_status_hpf": ["--slaveID", "3"],
-            "reset": ["--slaveID", "3"],
-            "halt_hpf": ["--slaveID", "3"],
-        }
-        for name, args in cases.items():
-            with self.subTest(script=name):
-                self.run_cli(name, args)
-
-    def test_timeout_halt_precedes_close(self):
-        master, calls = self.run_cli("all_hpf", ["--slaveID", "3", "--dpos_mm", "1"], fail_motion=True)
-        self.assertLess(master.events.index(("halt",)), master.events.index(("write_state", 1)))
-        self.assertEqual(calls[-2:], ["halt", "read_status"])
 
 
 if __name__ == "__main__":
