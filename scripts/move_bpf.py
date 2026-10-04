@@ -35,12 +35,11 @@ if __name__ == "__main__":
 
     IFNAME = "eth0"
 
-    u.init(IFNAME)
-    try:
+    with u.ethercat_master(IFNAME) as master:
         u.print_section(f"BPF motion")
         time.sleep(STEP_DISPLAY_PAUSE_S)
         logger.info("▶️  BPF making started")
-        result = u.move_bpf(BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
+        result = u.move_bpf(master, BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
         if result == None:
             time.sleep(STEP_DISPLAY_PAUSE_S)
             pass
@@ -48,8 +47,3 @@ if __name__ == "__main__":
             time.sleep(AFTER_MOTION_PAUSE_S)
             logger.info(f"✅ BPF#{BPF_ID} has been made")
             time.sleep(STEP_DISPLAY_PAUSE_S)
-
-    finally:
-        ## masterのclose処理
-        u.close()
-        logger.info("✅ Master has been closed")

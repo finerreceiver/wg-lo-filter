@@ -39,8 +39,7 @@ if __name__ == "__main__":
 
     IFNAME = "eth0"
 
-    u.init(IFNAME)
-    try:
+    with u.ethercat_master(IFNAME) as master:
         slave_list = u.get_bpf_slave_ids(BPF_ID)
 
         if PREPARE:
@@ -50,27 +49,27 @@ if __name__ == "__main__":
 
                 ## Parameter setting
                 logger.info(f"▶️  [Slave ID = {slave_id}]: Now setting parameter...")
-                u.prepare_actuator(slave_id, bpf_id=BPF_ID)
+                u.prepare_actuator(master, slave_id, bpf_id=BPF_ID)
                 logger.info(f"✅ [Slave ID = {slave_id}]: Parameters applied and controller enabled")
                 time.sleep(AFTER_PREPARATION_PAUSE_S)
 
                 ## Read status(1)
                 logger.info(f"📊 [Slave ID = {slave_id}]: Status before index search")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
-                logger.debug(u.read_status(slave_id))
+                logger.debug(u.read_status(master, slave_id))
                 time.sleep(STEP_DISPLAY_PAUSE_S)
 
                 ## Index search
                 logger.info(f"▶️ [Slave ID = {slave_id}]: Index search started")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
-                u.find_index(slave_id, direction=0)
+                u.find_index(master, slave_id, direction=0)
                 logger.info(f"✅ [Slave ID = {slave_id}]: Index has been found")
                 time.sleep(AFTER_INDEX_PAUSE_S)
 
                 ## Read status(2)
                 logger.info(f"📊 [Slave ID = {slave_id}]: Status before motion")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
-                logger.debug(u.read_status(slave_id))
+                logger.debug(u.read_status(master, slave_id))
                 time.sleep(STEP_DISPLAY_PAUSE_S)
 
                 logger.info(f"✅ [Slave ID = {slave_id}]: Pre-motion settinfg completed")
@@ -82,7 +81,7 @@ if __name__ == "__main__":
         u.print_section(f"BPF motion")
         time.sleep(STEP_DISPLAY_PAUSE_S)
         logger.info("▶️  BPF making started")
-        result = u.move_bpf(BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
+        result = u.move_bpf(master, BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
         if result == None:
             time.sleep(STEP_DISPLAY_PAUSE_S)
             pass
@@ -90,8 +89,3 @@ if __name__ == "__main__":
             time.sleep(AFTER_MOTION_PAUSE_S)
             logger.info(f"✅ BPF#{BPF_ID} has been made")
             time.sleep(STEP_DISPLAY_PAUSE_S)
-
-    finally:
-        ## masterのclose処理
-        u.close()
-        logger.info("✅ Master has been closed")

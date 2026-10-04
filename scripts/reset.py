@@ -22,13 +22,12 @@ if __name__ == "__main__":
 
     IFNAME = "eth0"
 
-    u.init(IFNAME)
     try:
-        u.reset(SLAVE_ID)
+        with u.ethercat_master(IFNAME) as master:
+            u.reset(master, SLAVE_ID)
 
-        time.sleep(RESET_STATUS_WAIT_S)
+            time.sleep(RESET_STATUS_WAIT_S)
         
-        logger.info(u.read_status(SLAVE_ID))
+            logger.info(u.read_status(master, SLAVE_ID))
     finally:
-        u.close()
         time.sleep(CLOSE_DISPLAY_PAUSE_S)
