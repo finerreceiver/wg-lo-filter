@@ -10,6 +10,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     SLAVE_ID = args.slaveID
+    BPF_ID = u.get_bpf_id_for_slave(SLAVE_ID)
     dpos_mm = args.dpos_mm
 
     IFNAME = "eth0"
@@ -21,7 +22,7 @@ if __name__ == "__main__":
 
     try:
 
-        u.prepare_actuator(SLAVE_ID) # コントローラーをresetしてから、制御パラメーターを送り、enableする
+        u.prepare_actuator(SLAVE_ID, bpf_id=BPF_ID) # コントローラーをresetしてから、制御パラメーターを送り、enableする
         print("✅ Parameters applied and controller enabled")
 
         ## Read status(1)

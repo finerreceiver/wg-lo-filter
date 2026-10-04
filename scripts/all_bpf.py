@@ -5,7 +5,7 @@ import time
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--bpf_ID", type=int, choices=[1, 2], required=True)
+    parser.add_argument("--bpf_ID", type=int, choices=u.BPF_IDS, required=True)
     parser.add_argument("--central_freq", type=float, required=True)
     parser.add_argument("--band_width", type=float, required=True)
     parser.add_argument("--prepare", action="store_true", help="指定すると、移動前にパラメーター設定とindex探索を実行します。")
@@ -27,10 +27,7 @@ if __name__ == "__main__":
 
     u.init(IFNAME)
     try:
-        if BPF_ID == 1:
-            slave_list = [u.SLAVE_ID_HPF_1, u.SLAVE_ID_HPF_2, u.SLAVE_ID_HPF_3]
-        if BPF_ID == 2:
-            slave_list = [u.SLAVE_ID_HPF_4, u.SLAVE_ID_HPF_5, u.SLAVE_ID_HPF_6]
+        slave_list = u.get_bpf_slave_ids(BPF_ID)
 
         if PREPARE:
             for slave_id in slave_list:
@@ -84,5 +81,3 @@ if __name__ == "__main__":
         ## masterのclose処理
         u.close()
         print("✅ Master has been closed")
-
-

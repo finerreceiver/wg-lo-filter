@@ -4,6 +4,8 @@ import time
 import struct
 import math
 import numpy as np
+from pathlib import Path
+import tomllib
 
 master = None
 _close_registered = False
@@ -21,14 +23,112 @@ SETTLE_TIME = 1.0
 # =========================
 
 # BPF #1: HPF #1（下側）+ LPF #1 = HPF #2・#3（上側）
-SLAVE_ID_HPF_1 = 0
-SLAVE_ID_HPF_2 = 1
-SLAVE_ID_HPF_3 = 2
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.toml"
+
+
+def load_config(path=CONFIG_PATH):
+    """Load and validate configuration before any EtherCAT communication."""
+    with Path(path).open("rb") as file:
+        config = tomllib.load(file)
+
+    try:
+        hpfs = config["hpfs"]
+        bpfs = config["bpfs"]
+        receivers = config["receivers"]
+        if not hpfs or not bpfs or not receivers:
+            raise ValueError("hpfs, bpfs and receivers must not be empty")
+        slave_ids = []
+        for hpf_id, hpf in hpfs.items():
+            if not hpf_id.isdecimal() or str(int(hpf_id)) != hpf_id or int(hpf_id) < 1:
+                raise ValueError(f"Invalid HPF ID: {hpf_id}")
+            slave_id = hpf["slave_id"]
+            if type(slave_id) is not int or slave_id < 0:
+                raise ValueError(f"HPF #{hpf_id}: slave_id must be a nonnegative integer")
+            slave_ids.append(slave_id)
+            if hpf["cutoff_side"] not in ("hpf", "lpf"):
+                raise ValueError(f"HPF #{hpf_id}: cutoff_side must be hpf or lpf")
+            for key in ("FREQ", "FRQ2"):
+                if type(hpf[key]) is not int or hpf[key] <= 0:
+                    raise ValueError(f"HPF #{hpf_id}: {key} must be a positive integer")
+            for key in ("A", "B", "X0"):
+                value = hpf[key]
+                if type(value) not in (int, float) or not math.isfinite(value):
+                    raise ValueError(f"HPF #{hpf_id}: {key} must be a finite number")
+        if len(set(slave_ids)) != len(slave_ids):
+            raise ValueError("HPF slave_id values must be unique")
+
+        assigned_hpfs = []
+        for bpf_id, bpf in bpfs.items():
+            if not bpf_id.isdecimal() or str(int(bpf_id)) != bpf_id or int(bpf_id) < 1:
+                raise ValueError(f"Invalid BPF ID: {bpf_id}")
+            ids = bpf["hpf_ids"]
+            order = bpf["move_order"]
+            if (not isinstance(ids, list) or not ids
+                    or any(type(i) is not int or str(i) not in hpfs for i in ids)
+                    or len(set(ids)) != len(ids)):
+                raise ValueError(f"BPF #{bpf_id}: invalid or duplicate hpf_ids")
+            if (not isinstance(order, list)
+                    or any(type(i) is not int for i in order)
+                    or sorted(order) != sorted(ids)):
+                raise ValueError(f"BPF #{bpf_id}: move_order must contain each member once")
+            assigned_hpfs.extend(ids)
+        if (len(set(assigned_hpfs)) != len(assigned_hpfs)
+                or set(assigned_hpfs) != {int(i) for i in hpfs}):
+            raise ValueError("Each HPF must belong to exactly one BPF")
+        for name, receiver in receivers.items():
+            bpf_id = receiver["bpf_id"]
+            if type(bpf_id) is not int or str(bpf_id) not in bpfs:
+                raise ValueError(f"Receiver {name}: unknown bpf_id {bpf_id}")
+    except KeyError as exc:
+        raise ValueError(f"Missing configuration entry in {path}: {exc}") from exc
+    return config
+
+
+CONFIG = load_config()
+BPF_IDS = tuple(sorted(int(i) for i in CONFIG["bpfs"]))
+BPF_B45 = CONFIG["receivers"]["B45"]["bpf_id"]
+BPF_B67 = CONFIG["receivers"]["B67"]["bpf_id"]
+
+
+def get_bpf_id_for_receiver(receiver_name):
+    try:
+        return CONFIG["receivers"][receiver_name]["bpf_id"]
+    except KeyError as exc:
+        raise ValueError(f"Unknown receiver: {receiver_name}") from exc
+
+
+def get_bpf_hpf_ids(bpf_id, *, motion_order=False):
+    if type(bpf_id) is not int or bpf_id not in BPF_IDS:
+        raise ValueError(f"Unknown BPF ID: {bpf_id}; configured IDs: {BPF_IDS}")
+    key = "move_order" if motion_order else "hpf_ids"
+    return list(CONFIG["bpfs"][str(bpf_id)][key])
+
+
+def get_bpf_slave_ids(bpf_id):
+    return [CONFIG["hpfs"][str(i)]["slave_id"] for i in get_bpf_hpf_ids(bpf_id)]
+
+
+def get_hpf_id_for_slave(slave_id):
+    if type(slave_id) is int:
+        for hpf_id, hpf in CONFIG["hpfs"].items():
+            if hpf["slave_id"] == slave_id:
+                return int(hpf_id)
+    raise ValueError(f"No HPF configured for slave ID {slave_id}")
+
+
+def get_bpf_id_for_slave(slave_id):
+    hpf_id = get_hpf_id_for_slave(slave_id)
+    return next(bpf_id for bpf_id in BPF_IDS if hpf_id in get_bpf_hpf_ids(bpf_id))
+
+# Keep the existing public names for callers of scripts.utils.
+SLAVE_ID_HPF_1 = CONFIG["hpfs"]["1"]["slave_id"]
+SLAVE_ID_HPF_2 = CONFIG["hpfs"]["2"]["slave_id"]
+SLAVE_ID_HPF_3 = CONFIG["hpfs"]["3"]["slave_id"]
 
 # BPF #2: LPF #2 = HPF #4・#6（上側）+ HPF #5（下側）
-SLAVE_ID_HPF_4 = 3
-SLAVE_ID_HPF_5 = 4
-SLAVE_ID_HPF_6 = 5
+SLAVE_ID_HPF_4 = CONFIG["hpfs"]["4"]["slave_id"]
+SLAVE_ID_HPF_5 = CONFIG["hpfs"]["5"]["slave_id"]
+SLAVE_ID_HPF_6 = CONFIG["hpfs"]["6"]["slave_id"]
 
 RESOLUTION_UM = 1.25
 RESOLUTION_MM = RESOLUTION_UM * 1e-3
@@ -40,33 +140,33 @@ def encoder_to_mm(position_encoder):
 
 # LPF #1のActual positionと実測LPF cutoffの−3 dB fitting結果
 # 2026年8月5日測定。70 GHzの測定点はfittingから除外。
-A_LPF_HPF_2 = 139.77990996621924
-B_LPF_HPF_2 = 4.146514102344519
-X0_LPF_HPF_2 = 3.6831305389197464
+A_LPF_HPF_2 = CONFIG["hpfs"]["2"]["A"]
+B_LPF_HPF_2 = CONFIG["hpfs"]["2"]["B"]
+X0_LPF_HPF_2 = CONFIG["hpfs"]["2"]["X0"]
 
-A_LPF_HPF_3 = 150.00098052196947
-B_LPF_HPF_3 = 1.3454350285068244
-X0_LPF_HPF_3 = 3.424692246476261
+A_LPF_HPF_3 = CONFIG["hpfs"]["3"]["A"]
+B_LPF_HPF_3 = CONFIG["hpfs"]["3"]["B"]
+X0_LPF_HPF_3 = CONFIG["hpfs"]["3"]["X0"]
 
 # HPF #1単体の−3 dB fitting結果（2026年8月4日測定）
-A_HPF_1 = 140.96792648249118
-B_HPF_1 = 3.2159676191402906
-X0_HPF_1 = 3.3405032839438187
+A_HPF_1 = CONFIG["hpfs"]["1"]["A"]
+B_HPF_1 = CONFIG["hpfs"]["1"]["B"]
+X0_HPF_1 = CONFIG["hpfs"]["1"]["X0"]
 
 # LPF #2 / HPF #4のActual positionと実測LPF cutoffのfitting結果
-A_LPF_HPF_4 = 134.2169506476309
-B_LPF_HPF_4 = 6.079161691165807
-X0_LPF_HPF_4 = 2.562860947465932
+A_LPF_HPF_4 = CONFIG["hpfs"]["4"]["A"]
+B_LPF_HPF_4 = CONFIG["hpfs"]["4"]["B"]
+X0_LPF_HPF_4 = CONFIG["hpfs"]["4"]["X0"]
 
 # LPF #2 / HPF #6のActual positionと実測LPF cutoffのfitting結果
-A_LPF_HPF_6 = 127.51463334495108
-B_LPF_HPF_6 = 8.130669597652863
-X0_LPF_HPF_6 = 2.760685100749963
+A_LPF_HPF_6 = CONFIG["hpfs"]["6"]["A"]
+B_LPF_HPF_6 = CONFIG["hpfs"]["6"]["B"]
+X0_LPF_HPF_6 = CONFIG["hpfs"]["6"]["X0"]
 
 # HPF #5単体のfitting結果
-A_HPF_5 = 154.6067528526659
-B_HPF_5 = -0.7844167254033043
-X0_HPF_5 = 3.0330052831635563
+A_HPF_5 = CONFIG["hpfs"]["5"]["A"]
+B_HPF_5 = CONFIG["hpfs"]["5"]["B"]
+X0_HPF_5 = CONFIG["hpfs"]["5"]["X0"]
 
 # =========================
 # EtherCAT basic functions
@@ -363,32 +463,18 @@ def set_param(slave_id, param_name, value, delay=0.02):
     command(slave_id, cmd_bytes, v1=value, delay=delay)
 
 
-def apply_default_settings(slave_id, bpf_id=1, ecat_ack_check=False):
+def apply_default_settings(slave_id, bpf_id=None, ecat_ack_check=False):
     """Apply the known actuator settings after every controller reset.
 
     These values were previously duplicated in setup.py, test.py, and all.py.
     Calling this function after reset() avoids relying on RAM-resident settings
     left over from a previous script invocation.
     """
-    frequency_settings = {
-        1: {
-            SLAVE_ID_HPF_1: (172000, 170000),
-            SLAVE_ID_HPF_2: (172000, 169000),
-            SLAVE_ID_HPF_3: (173000, 170000),
-        },
-        2: {
-            SLAVE_ID_HPF_4: (174000, 171000),
-            SLAVE_ID_HPF_5: (172000, 169000),
-            SLAVE_ID_HPF_6: (173000, 169000),
-        },
-    }
-
-    try:
-        freq, frq2 = frequency_settings[bpf_id][slave_id]
-    except KeyError as exc:
-        raise ValueError(
-            f"No default settings defined for BPF #{bpf_id}, slave ID {slave_id}"
-        ) from exc
+    configured_bpf = get_bpf_id_for_slave(slave_id)
+    if bpf_id is not None and bpf_id != configured_bpf:
+        raise ValueError(f"Slave {slave_id} belongs to BPF #{configured_bpf}, not #{bpf_id}")
+    hpf = CONFIG["hpfs"][str(get_hpf_id_for_slave(slave_id))]
+    freq, frq2 = hpf["FREQ"], hpf["FRQ2"]
 
     for param_name, value in [
         ("FREQ", freq),
@@ -424,12 +510,15 @@ def pdo_settle(cycles=10, dt=0.02):
         time.sleep(dt)
 
 
-def prepare_actuator(slave_id, bpf_id=1):
+def prepare_actuator(slave_id, bpf_id=None):
     """Reset, configure, and enable one actuator for a fresh run.
 
     Index search is deliberately separate: callers must invoke find_index()
     explicitly when an absolute position reference is required.
     """
+    configured_bpf = get_bpf_id_for_slave(slave_id)
+    if bpf_id is not None and bpf_id != configured_bpf:
+        raise ValueError(f"Slave {slave_id} belongs to BPF #{configured_bpf}, not #{bpf_id}")
     reset(slave_id)
     time.sleep(3)
 
@@ -924,8 +1013,7 @@ def calc_pos_mm_from_fcut(f_cut_GHz, A, B, X0):
 
 
 def calc_bpf_positions(bpf_id, central_freq_GHz, bandwidth_GHz):
-    if bpf_id not in (1, 2):
-        raise ValueError("bpf_idには1または2を指定してください。")
+    hpf_ids = get_bpf_hpf_ids(bpf_id)
 
     central_freq_GHz = float(central_freq_GHz)
     bandwidth_GHz = float(bandwidth_GHz)
@@ -949,30 +1037,12 @@ def calc_bpf_positions(bpf_id, central_freq_GHz, bandwidth_GHz):
         "LPF_cutoff_GHz": freq_lpf_GHz,
     }
 
-    if bpf_id == 1:
-        positions.update({
-            "HPF #1 position_mm": calc_pos_mm_from_fcut(
-                freq_hpf_GHz, A_HPF_1, B_HPF_1, X0_HPF_1
-            ),
-            "HPF #2 position_mm": calc_pos_mm_from_fcut(
-                freq_lpf_GHz, A_LPF_HPF_2, B_LPF_HPF_2, X0_LPF_HPF_2
-            ),
-            "HPF #3 position_mm": calc_pos_mm_from_fcut(
-                freq_lpf_GHz, A_LPF_HPF_3, B_LPF_HPF_3, X0_LPF_HPF_3
-            ),
-        })
-    else:
-        positions.update({
-            "HPF #4 position_mm": calc_pos_mm_from_fcut(
-                freq_lpf_GHz, A_LPF_HPF_4, B_LPF_HPF_4, X0_LPF_HPF_4
-            ),
-            "HPF #5 position_mm": calc_pos_mm_from_fcut(
-                freq_hpf_GHz, A_HPF_5, B_HPF_5, X0_HPF_5
-            ),
-            "HPF #6 position_mm": calc_pos_mm_from_fcut(
-                freq_lpf_GHz, A_LPF_HPF_6, B_LPF_HPF_6, X0_LPF_HPF_6
-            ),
-        })
+    for hpf_id in hpf_ids:
+        hpf = CONFIG["hpfs"][str(hpf_id)]
+        cutoff = freq_hpf_GHz if hpf["cutoff_side"] == "hpf" else freq_lpf_GHz
+        positions[f"HPF #{hpf_id} position_mm"] = calc_pos_mm_from_fcut(
+            cutoff, hpf["A"], hpf["B"], hpf["X0"]
+        )
 
     return positions
 
@@ -990,20 +1060,10 @@ def check_bpf_actuator_ready(name, slave_id):
 
 
 def halt_bpf(bpf_id):
-    if bpf_id == 1:
-        actuator_list = [
-            ("HPF #1", SLAVE_ID_HPF_1),
-            ("HPF #2", SLAVE_ID_HPF_2),
-            ("HPF #3", SLAVE_ID_HPF_3),
-        ]
-    elif bpf_id == 2:
-        actuator_list = [
-            ("HPF #4", SLAVE_ID_HPF_4),
-            ("HPF #5", SLAVE_ID_HPF_5),
-            ("HPF #6", SLAVE_ID_HPF_6),
-        ]
-    else:
-        raise ValueError("bpf_idには1または2を指定してください。")
+    actuator_list = [
+        (f"HPF #{i}", CONFIG["hpfs"][str(i)]["slave_id"])
+        for i in get_bpf_hpf_ids(bpf_id)
+    ]
 
     for name, slave_id in actuator_list:
         try:
@@ -1050,23 +1110,10 @@ def move_bpf(
     ## frequency -> positon
     positions = calc_bpf_positions(bpf_id, central_freq_GHz, bandwidth_GHz)
 
-    if bpf_id == 1:
-        # 先頭を単体HPF、後ろ2台をLPF側にそろえる。
-        actuator_list = [
-            ("HPF #1", SLAVE_ID_HPF_1, positions["HPF #1 position_mm"]),
-            ("HPF #2", SLAVE_ID_HPF_2, positions["HPF #2 position_mm"]),
-            ("HPF #3", SLAVE_ID_HPF_3, positions["HPF #3 position_mm"]),
-        ]
-    elif bpf_id == 2:
-        # 先頭を単体HPF、後ろ2台をLPF側にそろえる。
-        # actuator_list[1:] + actuator_list[:1]により、移動順は#4→#6→#5となる。
-        actuator_list = [
-            ("HPF #5", SLAVE_ID_HPF_5, positions["HPF #5 position_mm"]),
-            ("HPF #4", SLAVE_ID_HPF_4, positions["HPF #4 position_mm"]),
-            ("HPF #6", SLAVE_ID_HPF_6, positions["HPF #6 position_mm"]),
-        ]
-    else:
-        raise ValueError("bpf_idには1または2を指定してください。")
+    actuator_list = [
+        (f"HPF #{i}", CONFIG["hpfs"][str(i)]["slave_id"], positions[f"HPF #{i} position_mm"])
+        for i in get_bpf_hpf_ids(bpf_id, motion_order=True)
+    ]
 
     ## status check
     if master is None:
@@ -1110,8 +1157,8 @@ def move_bpf(
         return None
 
     try:
-        # LPF側の2台を先にそろえ、その後に単体HPFを移動する。
-        for name, slave_id, calculated_position in actuator_list[1:] + actuator_list[:1]:
+        # Follow the explicit move_order in config.toml.
+        for name, slave_id, calculated_position in actuator_list:
             dpos(slave_id, calculated_position, vel=vel, accel=accel, decel=decel)
     except Exception:
         print("🔴 移動中にエラーが発生しました。")
