@@ -9,7 +9,35 @@ import math
 import numpy as np
 from pathlib import Path
 import tomllib
-from scripts.logging_utils import get_logger
+import logging
+
+# 2026-10-04: CLI共通ロギングを統合。importだけでコンソールを設定しない。
+LOGGER_NAMESPACE = "wg_lo_filter"
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+CONSOLE_HANDLER_NAME = "wg-lo-filter-console"
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+LOG_DATE_FORMAT = "%H:%M:%S"
+logging.getLogger(LOGGER_NAMESPACE).addHandler(logging.NullHandler())
+
+
+def get_logger(name):
+    return logging.getLogger(f"{LOGGER_NAMESPACE}.{name}")
+
+
+def configure_logging(level="INFO"):
+    if not isinstance(level, str) or level.upper() not in LOG_LEVELS:
+        raise ValueError(f"Invalid log level: {level}")
+    application_logger = logging.getLogger(LOGGER_NAMESPACE)
+    application_logger.setLevel(level.upper())
+    application_logger.propagate = False
+    for handler in list(application_logger.handlers):
+        if handler.get_name() == CONSOLE_HANDLER_NAME:
+            application_logger.removeHandler(handler)
+            handler.close()
+    console = logging.StreamHandler()
+    console.set_name(CONSOLE_HANDLER_NAME)
+    console.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT))
+    application_logger.addHandler(console)
 
 logger = get_logger("utils")
 
@@ -152,6 +180,14 @@ def load_config(path=CONFIG_PATH):
             bpf_id = receiver["bpf_id"]
             if type(bpf_id) is not int or str(bpf_id) not in bpfs:
                 raise ValueError(f"Receiver {name}: unknown bpf_id {bpf_id}")
+            if not isinstance(receiver["cli_name"], str) or not receiver["cli_name"]:
+                raise ValueError(f"Receiver {name}: cli_name must be a nonempty string")
+            multiplier = receiver["rf_to_filter_multiplier"]
+            if type(multiplier) is not int or multiplier <= 0:
+                raise ValueError(f"Receiver {name}: rf_to_filter_multiplier must be a positive integer")
+        names = [receiver["cli_name"] for receiver in receivers.values()]
+        if len(names) != len(set(names)):
+            raise ValueError("Receiver cli_name values must be unique")
     except KeyError as exc:
         raise ValueError(f"Missing configuration entry in {path}: {exc}") from exc
     return config
@@ -1195,9 +1231,9 @@ def check_bpf_actuator_ready(master: pysoem.Master, name: str, slave_id: int) ->
     status = read_status(master, slave_id)
 
     if not status["enabled"]:
-        raise RuntimeError(f"{name}がenableされていません。")
+        raise RuntimeError(f"{name}がenableされていません。準備が完了していません。prepareを実行してください。")
     if not status["encoder_valid"]:
-        raise RuntimeError(f"{name}のindexが見つかっていません。")
+        raise RuntimeError(f"{name}のindexが見つかっていません。準備が完了していません。prepareを実行してください。")
     if has_error(status):
         raise RuntimeError(f"{name}にエラーがあります: {status}")
 
@@ -1300,13 +1336,10 @@ def move_bpf(
         logger.warning("🔴 Motion canceled")
         return None
 
-    try:
+    with halt_on_motion_error(master, bpf_id):
         # Follow the explicit move_order in config.toml.
         for name, slave_id, calculated_position in actuator_list:
             dpos(master, slave_id, calculated_position, vel=vel, accel=accel, decel=decel)
-    except Exception:
-        logger.error("🔴 移動中にエラーが発生しました。")
-        raise
 
     result = {
         "bpf_id": bpf_id,
@@ -1353,6 +1386,130 @@ def close(master: pysoem.Master, *, request_init: bool = True) -> None:
     logger.info("Master has been closed")
     if state_error is not None:
         raise state_error
+
+
+# 2026-10-04: CLI統合用の上位制御。Typerには依存しない。
+HALT_STATUS_WAIT_S = 0.5
+RESET_STATUS_WAIT_S = 0.5
+
+
+def get_receiver_config(rx: str) -> dict[str, Any]:
+    for receiver in CONFIG["receivers"].values():
+        if receiver["cli_name"] == rx:
+            return receiver
+    choices = ", ".join(receiver["cli_name"] for receiver in CONFIG["receivers"].values())
+    raise ValueError(f"Unknown receiver: {rx}. Choose: {choices}")
+
+
+def resolve_target(rx: str | None, hpf_id: int | None) -> tuple[int, list[int]]:
+    """Require exactly one receiver/HPF selector; never default to all devices."""
+    if (rx is None) == (hpf_id is None):
+        raise ValueError("--rx または --hpf-id のどちらか一方を指定してください。")
+    if rx is not None:
+        bpf_id = get_receiver_config(rx)["bpf_id"]
+        return bpf_id, get_bpf_slave_ids(bpf_id)
+    if str(hpf_id) not in CONFIG["hpfs"]:
+        raise ValueError(f"Unknown HPF ID: {hpf_id}")
+    slave_id = CONFIG["hpfs"][str(hpf_id)]["slave_id"]
+    return get_bpf_id_for_slave(slave_id), [slave_id]
+
+
+def build_lo_request(rx: str, lo_rf_GHz: float, bandwidth_GHz: float) -> dict[str, Any]:
+    """Convert RF LO to filter GHz and validate calculations before opening."""
+    if not math.isfinite(lo_rf_GHz) or lo_rf_GHz <= 0:
+        raise ValueError("--loには0より大きい有限の数値を指定してください。")
+    receiver = get_receiver_config(rx)
+    center = lo_rf_GHz / receiver["rf_to_filter_multiplier"]
+    positions = calc_bpf_positions(receiver["bpf_id"], center, bandwidth_GHz)
+    return {
+        "rx": rx, "lo_rf_GHz": lo_rf_GHz,
+        "multiplier": receiver["rf_to_filter_multiplier"],
+        **positions,
+    }
+
+
+def validate_connected_slaves(master: pysoem.Master, slave_ids: list[int]) -> None:
+    for slave_id in slave_ids:
+        if not 0 <= slave_id < len(master.slaves):
+            raise RuntimeError(
+                f"slave ID {slave_id}が必要ですが、接続slave数は{len(master.slaves)}です。"
+            )
+
+
+def log_selected_status(master: pysoem.Master, slave_ids: list[int]) -> None:
+    """PDO status only: do not enable/reset/prepare before inspection."""
+    validate_connected_slaves(master, slave_ids)
+    for slave_id in slave_ids:
+        status = read_status(master, slave_id)
+        logger.info("HPF #%s / slave %s: position %.5f mm",
+                    get_hpf_id_for_slave(slave_id), slave_id, encoder_to_mm(status["pos"]))
+        logger.info("%s", status)
+
+
+def halt_after_motion_error(master: pysoem.Master, bpf_id: int) -> None:
+    """Best effort HALT for the entire BPF, including single-HPF preparation."""
+    halt_bpf(master, bpf_id)
+    time.sleep(HALT_STATUS_WAIT_S)
+    for slave_id in get_bpf_slave_ids(bpf_id):
+        try:
+            logger.info("Status after HALT / slave %s: %s", slave_id, read_status(master, slave_id))
+        except Exception as error:
+            logger.error("HALT後のステータス取得失敗 / slave %s: %s", slave_id, error)
+
+
+@contextmanager
+def halt_on_motion_error(master: pysoem.Master, bpf_id: int) -> Iterator[None]:
+    """Only wrap operations that may have started driving; preserve the error."""
+    try:
+        yield
+    except (Exception, KeyboardInterrupt) as error:
+        logger.error("BPF #%sの駆動を中断します (%s: %s)。全3台へHALTを送信します。",
+                     bpf_id, type(error).__name__, error)
+        try:
+            halt_after_motion_error(master, bpf_id)
+        except BaseException as halt_error:
+            logger.error("内部HALT処理にも失敗しました: %s", halt_error)
+            error.add_note(f"Internal HALT failed: {halt_error}")
+        raise
+
+
+def prepare_selected(master: pysoem.Master, bpf_id: int, slave_ids: list[int]) -> None:
+    validate_connected_slaves(master, slave_ids)
+    with halt_on_motion_error(master, bpf_id):
+        for slave_id in slave_ids:
+            logger.info("HPF #%s / slave %s: preparation started",
+                        get_hpf_id_for_slave(slave_id), slave_id)
+            prepare_actuator(master, slave_id, bpf_id=bpf_id)
+            find_index(master, slave_id, direction=0)
+            logger.debug("Status after prepare: %s", read_status(master, slave_id))
+    logger.info("Preparation completed")
+
+
+def halt_selected(master: pysoem.Master, slave_ids: list[int]) -> None:
+    """User-requested stop; all selected HALTs are attempted before status reads."""
+    validate_connected_slaves(master, slave_ids)
+    for slave_id in slave_ids:
+        try:
+            halt(master, slave_id)
+            logger.info("HPF #%s / slave %s halted", get_hpf_id_for_slave(slave_id), slave_id)
+        except Exception as error:
+            logger.error("HALT failed / slave %s: %s", slave_id, error)
+    time.sleep(HALT_STATUS_WAIT_S)
+    for slave_id in slave_ids:
+        try:
+            log_selected_status(master, [slave_id])
+        except Exception as error:
+            logger.error("HALT後のステータス取得失敗 / slave %s: %s", slave_id, error)
+
+
+def reset_selected(master: pysoem.Master, slave_ids: list[int]) -> None:
+    validate_connected_slaves(master, slave_ids)
+    for slave_id in slave_ids:
+        reset(master, slave_id)
+        time.sleep(RESET_STATUS_WAIT_S)
+        log_selected_status(master, [slave_id])
+    logger.info("Reset completed. 次の移動前にprepareを実行してください。")
+
 
 def print_section(title):
     logger.info("%s", title)

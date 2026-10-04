@@ -65,9 +65,13 @@ INDA = 1      # index自動検出
 
 [receivers.B45]
 bpf_id = 1
+cli_name = "4+5"
+rf_to_filter_multiplier = 2 # RF側第1LO周波数 / フィルター中心周波数
 
 [receivers.B67]
 bpf_id = 2
+cli_name = "6+7"
+rf_to_filter_multiplier = 3
 
 [bpfs."1"]
 hpf_ids = [1, 2, 3]
