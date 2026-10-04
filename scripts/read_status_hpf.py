@@ -22,17 +22,15 @@ if __name__ == "__main__":
 
     SLAVE_ID = args.slaveID
     logger.debug("")
-    u.init(IFNAME)
     try:
-        u.enable(SLAVE_ID)
-        time.sleep(ENABLE_STATUS_WAIT_S)
-        logger.info(u.read_status(SLAVE_ID))
-        position_mm = u.encoder_to_mm(u.read_status(SLAVE_ID)['pos'])
-        logger.info(f"Position: {position_mm} [mm]")
+        with u.ethercat_master(IFNAME) as master:
+            u.enable(master, SLAVE_ID)
+            time.sleep(ENABLE_STATUS_WAIT_S)
+            logger.info(u.read_status(master, SLAVE_ID))
+            position_mm = u.encoder_to_mm(u.read_status(master, SLAVE_ID)['pos'])
+            logger.info(f"Position: {position_mm} [mm]")
     finally:
-        u.close()
         time.sleep(CLOSE_DISPLAY_PAUSE_S)
-        logger.info("✅ Master has been closed")
 
 
            

@@ -20,27 +20,23 @@ if __name__ == "__main__":
     configure_logging(args.log_level)
 
     BPF_ID = args.bpf_ID
-    u.init(IFNAME)
-
     try:
-        slave_list = u.get_bpf_slave_ids(BPF_ID)
+        with u.ethercat_master(IFNAME) as master:
 
-        logger.info("▶️ We'll halt the actuators")
-        logger.info("📊 Status before HALT")
-        for SLAVE_ID in slave_list:
-            logger.info(f"📊 [Slave ID = {SLAVE_ID}]: Status before halt")
-            logger.debug(u.read_status(SLAVE_ID))
+            slave_list = u.get_bpf_slave_ids(BPF_ID)
 
-        u.halt_bpf(BPF_ID)
+            logger.info("▶️ We'll halt the actuators")
+            logger.info("📊 Status before HALT")
+            for SLAVE_ID in slave_list:
+                logger.info(f"📊 [Slave ID = {SLAVE_ID}]: Status before halt")
+                logger.debug(u.read_status(master, SLAVE_ID))
 
-        for SLAVE_ID in slave_list:
-            logger.info(f"📊 [Slave ID = {SLAVE_ID}]: Status after halt")
-            logger.debug(u.read_status(SLAVE_ID))
-        
-        # motor_on bit を読み込んでHALTが成功したか判定したいね
+            u.halt_bpf(master, BPF_ID)
 
+            for SLAVE_ID in slave_list:
+                logger.info(f"📊 [Slave ID = {SLAVE_ID}]: Status after halt")
+                logger.debug(u.read_status(master, SLAVE_ID))
     finally:
-        u.close()
         time.sleep(CLOSE_DISPLAY_PAUSE_S)
 
            

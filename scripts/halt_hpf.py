@@ -16,21 +16,16 @@ if __name__ == "__main__":
     configure_logging(args.log_level)
 
     SLAVE_ID = args.slaveID
-    u.init(IFNAME)
+    with u.ethercat_master(IFNAME) as master:
 
-    try:
         logger.info("▶️ We'll halt the actuator")
         logger.info("📊 Status before HALT")
-        logger.debug(u.read_status(SLAVE_ID))
+        logger.debug(u.read_status(master, SLAVE_ID))
 
-        u.halt(SLAVE_ID)
+        u.halt(master, SLAVE_ID)
 
         logger.info("📊 Status after HALT")
-        logger.debug(u.read_status(SLAVE_ID))
-        # motor_on bit を読み込んでHALTが成功したか判定したいね
-
-    finally:
-        u.close()
+        logger.debug(u.read_status(master, SLAVE_ID))
 
            
   

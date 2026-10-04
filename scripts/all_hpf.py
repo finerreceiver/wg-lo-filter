@@ -29,55 +29,51 @@ if __name__ == "__main__":
     IFNAME = "eth0"
 
     ## Initializing
-    u.init(IFNAME)
-    time.sleep(AFTER_INIT_PAUSE_S)
-    logger.info("✅ Controller has been initialized")
+    with u.ethercat_master(IFNAME) as master:
+        time.sleep(AFTER_INIT_PAUSE_S)
+        logger.info("✅ Controller has been initialized")
 
-    try:
+        try:
 
-        u.prepare_actuator(SLAVE_ID, bpf_id=BPF_ID) # コントローラーをresetしてから、制御パラメーターを送り、enableする
-        logger.info("✅ Parameters applied and controller enabled")
+            u.prepare_actuator(master, SLAVE_ID, bpf_id=BPF_ID) # コントローラーをresetしてから、制御パラメーターを送り、enableする
+            logger.info("✅ Parameters applied and controller enabled")
 
-        ## Read status(1)
-        logger.info("✅ Status before index search")
-        logger.debug(u.read_status(SLAVE_ID))
-        time.sleep(STATUS_DISPLAY_PAUSE_S)
+            ## Read status(1)
+            logger.info("✅ Status before index search")
+            logger.debug(u.read_status(master, SLAVE_ID))
+            time.sleep(STATUS_DISPLAY_PAUSE_S)
 
-        ## Index search
-        logger.info("▶️ Index search started")
-        u.find_index(SLAVE_ID, direction=0)
-        logger.info("✅ Index has been found")
+            ## Index search
+            logger.info("▶️ Index search started")
+            u.find_index(master, SLAVE_ID, direction=0)
+            logger.info("✅ Index has been found")
 
 
-        ## Read status(2)
-        logger.info("✅ Status before motion")
-        logger.debug(u.read_status(SLAVE_ID))
-        time.sleep(STATUS_DISPLAY_PAUSE_S)
+            ## Read status(2)
+            logger.info("✅ Status before motion")
+            logger.debug(u.read_status(master, SLAVE_ID))
+            time.sleep(STATUS_DISPLAY_PAUSE_S)
 
-        # DPOS
-        logger.info("▶️ Motion started")
-        u.dpos(SLAVE_ID, target_pos_mm=dpos_mm)
-        time.sleep(AFTER_MOTION_PAUSE_S)
-        logger.info("✅ DPOS has been done")
-        time.sleep(STEP_DISPLAY_PAUSE_S)
+            # DPOS
+            logger.info("▶️ Motion started")
+            u.dpos(master, SLAVE_ID, target_pos_mm=dpos_mm)
+            time.sleep(AFTER_MOTION_PAUSE_S)
+            logger.info("✅ DPOS has been done")
+            time.sleep(STEP_DISPLAY_PAUSE_S)
         
 
-        ## Read status(3)
-        logger.info("✅ Status after motion")
-        logger.debug(u.read_status(SLAVE_ID))
+            ## Read status(3)
+            logger.info("✅ Status after motion")
+            logger.debug(u.read_status(master, SLAVE_ID))
 
-    except TimeoutError:
-        logger.error("⚠️ Timeout detected. Sending HALT to the actuator.")
-        try:
-            ## errorが出ているので、motorの停止信号を送る
-            u.halt(SLAVE_ID)
-            time.sleep(HALT_STATUS_WAIT_S)
-            logger.info("✅ Status after HALT")
-            logger.debug(u.read_status(SLAVE_ID))
-        except Exception as halt_error:
-            logger.error(f"⚠️ HALT command or status read failed: {halt_error}")
-        raise
-    finally:
-        ## masterのclose処理
-        u.close()
-        logger.info("✅ Master has been closed")
+        except TimeoutError:
+            logger.error("⚠️ Timeout detected. Sending HALT to the actuator.")
+            try:
+                ## errorが出ているので、motorの停止信号を送る
+                u.halt(master, SLAVE_ID)
+                time.sleep(HALT_STATUS_WAIT_S)
+                logger.info("✅ Status after HALT")
+                logger.debug(u.read_status(master, SLAVE_ID))
+            except Exception as halt_error:
+                logger.error(f"⚠️ HALT command or status read failed: {halt_error}")
+            raise

@@ -1,4 +1,7 @@
-import atexit
+from __future__ import annotations
+
+from contextlib import contextmanager
+from typing import Any, Callable, Iterator
 import pysoem
 import time
 import struct
@@ -9,9 +12,6 @@ import tomllib
 from scripts.logging_utils import get_logger
 
 logger = get_logger("utils")
-
-master = None
-_close_registered = False
 
 # 固定の通信仕様。運用設定と区別し、TOMLで変更しない。
 PDO_COMMAND_FORMAT = "<4siiHHB"
@@ -266,35 +266,57 @@ X0_HPF_5 = CONFIG["hpfs"]["5"]["X0"]
 # =========================
 # EtherCAT basic functions
 # =========================
-def init(ifname):
-    global master, _close_registered
+@contextmanager
+def ethercat_master(ifname: str) -> Iterator[pysoem.Master]:
+    """Own a master for one with block, including initialization-failure cleanup.
 
+    Preserve the established configuration/state-transition sequence and timing.
+    Cleanup failures are raised on normal exit; during an existing exception
+    they are logged and attached as a note without replacing the original error.
+    """
     master = pysoem.Master()
-    master.open(ifname)
+    opened = False
+    primary_error = None
+    try:
+        master.open(ifname)
+        opened = True
+        if master.config_init() < 1:
+            raise RuntimeError(f"No EtherCAT slaves found on {ifname}")
+        master.config_map()
+        master.state_check(pysoem.SAFEOP_STATE, timeout=ETHERCAT_STATE_CHECK_TIMEOUT_US)
+        if master.state != pysoem.SAFEOP_STATE:
+            raise RuntimeError("Failed to reach EtherCAT SAFEOP_STATE")
+        master.state = pysoem.OP_STATE
+        master.write_state()
+        master.state_check(pysoem.OP_STATE, timeout=ETHERCAT_STATE_CHECK_TIMEOUT_US)
+        if master.state != pysoem.OP_STATE:
+            raise RuntimeError("Failed to reach EtherCAT OP_STATE")
+        logger.info("Master is in OP_STATE")
+        yield master
+    except BaseException as error:
+        # Also preserve KeyboardInterrupt/SystemExit while closing the adapter.
+        primary_error = error
+        raise
+    finally:
+        try:
+            close(master, request_init=opened)
+        except BaseException as cleanup_error:
+            if primary_error is None:
+                raise
+            logger.error("Master cleanup also failed: %s", cleanup_error)
+            primary_error.add_note(f"EtherCAT master cleanup failed: {cleanup_error}")
 
-    if not _close_registered:
-        atexit.register(close)
-        _close_registered = True
 
-    if master.config_init() < 1:
-        raise RuntimeError(f"No EtherCAT slaves found on {ifname}")
-
-    master.config_map()
-
-    master.state_check(pysoem.SAFEOP_STATE, timeout=ETHERCAT_STATE_CHECK_TIMEOUT_US)
-    if master.state != pysoem.SAFEOP_STATE:
-        raise RuntimeError("Failed to reach EtherCAT SAFEOP_STATE")
-
-    master.state = pysoem.OP_STATE
-    master.write_state()
-    master.state_check(pysoem.OP_STATE, timeout=ETHERCAT_STATE_CHECK_TIMEOUT_US)
-    if master.state != pysoem.OP_STATE:
-        raise RuntimeError("Failed to reach EtherCAT OP_STATE")
-
-    logger.info("Master is in OP_STATE")
-
-
-def send_cmd(slave_id, cmd_bytes, execute, v1=0, v2=0, v3=0, v4=0):
+def send_cmd(
+    master: pysoem.Master,
+    slave_id: int,
+    cmd_bytes: bytes,
+    execute: int,
+    v1: int = 0,
+    v2: int = 0,
+    v3: int = 0,
+    v4: int = 0,
+) -> None:
     """
     Xeryon EtherCAT PDO:
       cmd_bytes : 4-byte ASCII command, e.g. b'DPOS'
@@ -317,32 +339,41 @@ def send_cmd(slave_id, cmd_bytes, execute, v1=0, v2=0, v3=0, v4=0):
     slave = master.slaves[slave_id]
     slave.output = payload.ljust(len(slave.output), b"\x00")
 
-def trig():
+def trig(master: pysoem.Master) -> None:
     master.send_processdata()
     master.receive_processdata()
     time.sleep(PDO_EXCHANGE_PAUSE_S)
     
 
 
-def command(slave_id, cmd_bytes, v1=0, v2=0, v3=0, v4=0, delay=LEGACY_UNUSED_COMMAND_DELAY_S):
+def command(
+    master: pysoem.Master,
+    slave_id: int,
+    cmd_bytes: bytes,
+    v1: int = 0,
+    v2: int = 0,
+    v3: int = 0,
+    v4: int = 0,
+    delay: float = LEGACY_UNUSED_COMMAND_DELAY_S,
+) -> None:
     """
     Xeryon EtherCAT commands are sent in two steps:
       1. execute = 0
       2. execute = 1
     delay is retained for compatibility and is currently unused.
     """
-    send_cmd(slave_id, cmd_bytes, EXECUTE_PREPARE, v1, v2, v3, v4)
-    trig()
+    send_cmd(master, slave_id, cmd_bytes, EXECUTE_PREPARE, v1, v2, v3, v4)
+    trig(master)
 
-    send_cmd(slave_id, cmd_bytes, EXECUTE_RUN, v1, v2, v3, v4)
-    trig()
+    send_cmd(master, slave_id, cmd_bytes, EXECUTE_RUN, v1, v2, v3, v4)
+    trig(master)
 
 
 # =========================
 # Status handling
 # =========================
-def read_status(slave_id):
-    trig()
+def read_status(master: pysoem.Master, slave_id: int) -> dict[str, Any]:
+    trig(master)
 
     data = master.slaves[slave_id].input
 
@@ -371,11 +402,17 @@ def has_error(st):
     )
 
 
-def wait_until(slave_id, condition, timeout=DEFAULT_WAIT_TIMEOUT_S, label="condition"):
+def wait_until(
+    master: pysoem.Master,
+    slave_id: int,
+    condition: Callable[[dict[str, Any]], bool],
+    timeout: float = DEFAULT_WAIT_TIMEOUT_S,
+    label: str = 'condition',
+) -> dict[str, Any]:
     t0 = time.time()
 
     while time.time() - t0 < timeout:
-        st = read_status(slave_id)
+        st = read_status(master, slave_id)
 
         if has_error(st):
             raise RuntimeError(f"Controller error while waiting for {label}: {st}")
@@ -391,40 +428,47 @@ def wait_until(slave_id, condition, timeout=DEFAULT_WAIT_TIMEOUT_S, label="condi
 # =========================
 # Motion commands
 # =========================
-def enable(slave_id):
+def enable(master: pysoem.Master, slave_id: int) -> None:
     """
     ENBL=1:
       - enables motor signals
       - also recovers from errors
     """
-    command(slave_id, b"ENBL", v1=1)
-    wait_until(slave_id, lambda st: st["enabled"], timeout=ENABLE_TIMEOUT_S, label="enabled")
-    trig()
+    command(master, slave_id, b"ENBL", v1=1)
+    wait_until(master, slave_id, lambda st: st["enabled"], timeout=ENABLE_TIMEOUT_S, label="enabled")
+    trig(master)
 
 
-def disable(slave_id):
-    command(slave_id, b"ENBL", v1=0)
+def disable(master: pysoem.Master, slave_id: int) -> None:
+    command(master, slave_id, b"ENBL", v1=0)
 
 
-def halt(slave_id):
+def halt(master: pysoem.Master, slave_id: int) -> None:
     """
     Normal stop.
     STOP is more like emergency stop and blocks following commands.
     """
-    command(slave_id, b"HALT")
-    trig()
+    command(master, slave_id, b"HALT")
+    trig(master)
 
 
-def reset(slave_id):
+def reset(master: pysoem.Master, slave_id: int) -> None:
     """
     RSET resets controller and settings to saved values.
     After this, ENBL and INDX are needed again.
     """
-    command(slave_id, b"RSET")
-    trig()
+    command(master, slave_id, b"RSET")
+    trig(master)
 
 
-def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
+def find_index(
+    master: pysoem.Master,
+    slave_id: int,
+    direction: int = 0,
+    vel: int = INDEX_VEL,
+    accel: int = ACCEL,
+    decel: int = DECEL,
+) -> dict[str, Any]:
     """
     direction:
       0 -> descending encoder direction
@@ -433,18 +477,18 @@ def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
     if direction not in (0, 1):
         raise ValueError("INDX direction must be 0 or 1")
 
-    command(slave_id, b"INDX", v1=direction, v2=vel, v3=accel, v4=decel)
+    command(master, slave_id, b"INDX", v1=direction, v2=vel, v3=accel, v4=decel)
 
     # INDX の直後は PDO の状態反映に数周期かかることがある。
     # 公式ライブラリと同様に数回更新を待ってから、探索が原点未検出の
     # まま終了していないか確認する。
     for _ in range(AFTER_INDEX_PDO_CYCLES):
         time.sleep(POLL_DT)
-        st = read_status(slave_id)
+        st = read_status(master, slave_id)
 
     t0 = time.time()
     while time.time() - t0 < INDEX_SEARCH_TIMEOUT_S:
-        st = read_status(slave_id)
+        st = read_status(master, slave_id)
 
         if has_error(st):
             raise RuntimeError(f"Controller error while waiting for index: {st}")
@@ -466,6 +510,7 @@ def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
         )
 
     wait_until(
+        master,
         slave_id,
         lambda st: st["position_reached"],
         timeout=INDEX_LANDING_TIMEOUT_S,
@@ -473,18 +518,25 @@ def find_index(slave_id, direction=0, vel=INDEX_VEL, accel=ACCEL, decel=DECEL):
     )
 
     time.sleep(SETTLE_TIME)
-    st = read_status(slave_id)
+    st = read_status(master, slave_id)
     logger.info("Index found for slave %s", slave_id)
     logger.debug("Index status: %s", st)
     time.sleep(INDEX_RESULT_DISPLAY_PAUSE_S)
     return st
 
-def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
+def move_abs(
+    master: pysoem.Master,
+    slave_id: int,
+    target_pos: int,
+    vel: int = DEFAULT_VEL,
+    accel: int = ACCEL,
+    decel: int = DECEL,
+) -> dict[str, Any]:
     """
     Absolute move by DPOS.
     target_pos is in encoder units.
     """
-    st = read_status(slave_id)
+    st = read_status(master, slave_id)
 
     if not st["enabled"]:
         raise RuntimeError("Controller is not enabled. Run enable() first.")
@@ -492,9 +544,10 @@ def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     if not st["encoder_valid"]:
         raise RuntimeError("Index is not found yet. Run find_index() first.")
 
-    command(slave_id, b"DPOS", v1=target_pos, v2=vel, v3=accel, v4=decel)
+    command(master, slave_id, b"DPOS", v1=target_pos, v2=vel, v3=accel, v4=decel)
     time.sleep(MOTION_STATUS_WAIT_S)
     # wait_until(
+    #     master,
     #     slave_id,
     #     lambda s: (not s["position_reached"]) or s["motor_on"],
     #     timeout=1.0,
@@ -502,6 +555,7 @@ def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     # )
 
     st = wait_until(
+        master,
         slave_id,
         lambda s: s["position_reached"] and not s["motor_on"],
         timeout=ABSOLUTE_MOVE_TIMEOUT_S,
@@ -509,12 +563,19 @@ def move_abs(slave_id, target_pos, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     )
 
     time.sleep(SETTLE_TIME)
-    st = read_status(slave_id)
+    st = read_status(master, slave_id)
 
     logger.info(f"Target={target_pos}, Actual={st['pos']}, Error={st['pos'] - target_pos}")
     return st
 
-def scan(slave_id, direction, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
+def scan(
+    master: pysoem.Master,
+    slave_id: int,
+    direction: int,
+    vel: int = DEFAULT_VEL,
+    accel: int = ACCEL,
+    decel: int = DECEL,
+) -> None:
     """
     Continuous closed-loop motion.
     direction:
@@ -525,21 +586,32 @@ def scan(slave_id, direction, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
     if direction not in (-1, 0, 1):
         raise ValueError("SCAN direction must be -1, 0, or 1")
 
-    command(slave_id, b"SCAN", v1=direction, v2=vel, v3=accel, v4=decel)
+    command(master, slave_id, b"SCAN", v1=direction, v2=vel, v3=accel, v4=decel)
 
 
-def stop_scan(slave_id):
-    scan(slave_id, direction=0)
+def stop_scan(master: pysoem.Master, slave_id: int) -> None:
+    scan(master, slave_id, direction=0)
 
-def set_param(slave_id, param_name, value, delay=LEGACY_UNUSED_COMMAND_DELAY_S):
+def set_param(
+    master: pysoem.Master,
+    slave_id: int,
+    param_name: str,
+    value: int | float,
+    delay: float = LEGACY_UNUSED_COMMAND_DELAY_S,
+) -> None:
     if len(param_name) != COMMAND_NAME_BYTES:
         raise ValueError("param_name must be 4 characters, e.g. 'PROP', 'FREQ'")
 
     cmd_bytes = param_name.encode("ascii")
-    command(slave_id, cmd_bytes, v1=value, delay=delay)
+    command(master, slave_id, cmd_bytes, v1=value, delay=delay)
 
 
-def apply_default_settings(slave_id, bpf_id=None, ecat_ack_check=False):
+def apply_default_settings(
+    master: pysoem.Master,
+    slave_id: int,
+    bpf_id: int | None = None,
+    ecat_ack_check: bool = False,
+) -> None:
     """Apply the known actuator settings after every controller reset.
 
     These values were previously duplicated in setup.py, test.py, and all.py.
@@ -557,21 +629,25 @@ def apply_default_settings(slave_id, bpf_id=None, ecat_ack_check=False):
         ("FRQ2", frq2),
     ] + [(name, CONFIG["controller_defaults"][name]) for name in CONTROLLER_PARAMETER_ORDER]
     for param_name, value in parameters:
-        set_param(slave_id, param_name, value)
+        set_param(master, slave_id, param_name, value)
         if ecat_ack_check:
             logger.debug("Slave %s / %s: ecat_ack=%s", slave_id, param_name,
-                         read_status(slave_id)['ecat_ack'])
+                         read_status(master, slave_id)['ecat_ack'])
     time.sleep(SETTINGS_APPLY_WAIT_S)
 
 
-def pdo_settle(cycles=PDO_SETTLE_CYCLES, dt=PDO_SETTLE_INTERVAL_S):
+def pdo_settle(
+    master: pysoem.Master,
+    cycles: int = PDO_SETTLE_CYCLES,
+    dt: float = PDO_SETTLE_INTERVAL_S,
+) -> None:
     """Exchange PDOs for several cycles so the preceding command can settle."""
     for _ in range(cycles):
-        trig()
+        trig(master)
         time.sleep(dt)
 
 
-def prepare_actuator(slave_id, bpf_id=None):
+def prepare_actuator(master: pysoem.Master, slave_id: int, bpf_id: int | None = None) -> None:
     """Reset, configure, and enable one actuator for a fresh run.
 
     Index search is deliberately separate: callers must invoke find_index()
@@ -580,14 +656,14 @@ def prepare_actuator(slave_id, bpf_id=None):
     configured_bpf = get_bpf_id_for_slave(slave_id)
     if bpf_id is not None and bpf_id != configured_bpf:
         raise ValueError(f"Slave {slave_id} belongs to BPF #{configured_bpf}, not #{bpf_id}")
-    reset(slave_id)
+    reset(master, slave_id)
     time.sleep(RESET_WAIT_S)
 
-    apply_default_settings(slave_id, bpf_id=bpf_id)
-    pdo_settle(cycles=AFTER_SETTINGS_PDO_CYCLES, dt=PDO_SETTLE_INTERVAL_S)
+    apply_default_settings(master, slave_id, bpf_id=bpf_id)
+    pdo_settle(master, cycles=AFTER_SETTINGS_PDO_CYCLES, dt=PDO_SETTLE_INTERVAL_S)
     
-    enable(slave_id)
-    pdo_settle(cycles=AFTER_ENABLE_PDO_CYCLES, dt=PDO_SETTLE_INTERVAL_S)
+    enable(master, slave_id)
+    pdo_settle(master, cycles=AFTER_ENABLE_PDO_CYCLES, dt=PDO_SETTLE_INTERVAL_S)
 
 
 def save_rows_csv(rows, csv_path):
@@ -610,13 +686,14 @@ def save_rows_csv(rows, csv_path):
 
 
 def record_until(
-    slave_id,
-    stop_condition,
-    csv_path="motion_log.csv",
-    target_pos=None,
-    poll_dt=RECORD_POLL_INTERVAL_S,
-    timeout=DEFAULT_WAIT_TIMEOUT_S,
-):
+    master: pysoem.Master,
+    slave_id: int,
+    stop_condition: Callable[[dict[str, Any], float], bool],
+    csv_path: str | Path = 'motion_log.csv',
+    target_pos: int | None = None,
+    poll_dt: float = RECORD_POLL_INTERVAL_S,
+    timeout: float = DEFAULT_WAIT_TIMEOUT_S,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """
     駆動中のPDO入力を読み続けてCSV保存する関数。
 
@@ -659,7 +736,7 @@ def record_until(
             now = time.perf_counter()
             t = now - t0
 
-            st = read_status(slave_id)
+            st = read_status(master, slave_id)
             last_status = st
 
             pos_enc = st["pos"]
@@ -906,20 +983,21 @@ def plot_motion_log_encoder(csv_path, save_path=None, smooth_window=1):
     return df
 
 def move_abs_plot(
-    slave_id,
-    target_pos,
-    vel=DEFAULT_VEL,
-    accel=ACCEL,
-    decel=DECEL,
-    csv_path=None,
-    plot=True,
-    plot_save_path=None,
-    poll_dt=0.005,
-    timeout=30.0,
-    smooth_window=5,
-    min_record_time=0.05,
-    target_tolerance=2,
-):
+    master: pysoem.Master,
+    slave_id: int,
+    target_pos: int,
+    vel: int = DEFAULT_VEL,
+    accel: int = ACCEL,
+    decel: int = DECEL,
+    csv_path: str | Path | None = None,
+    plot: bool = True,
+    plot_save_path: str | Path | None = None,
+    poll_dt: float = 0.005,
+    timeout: float = 30.0,
+    smooth_window: int = 5,
+    min_record_time: float = 0.05,
+    target_tolerance: int = 2,
+) -> tuple[list[dict[str, Any]], dict[str, Any], Any]:
     """
     DPOSで絶対位置移動しながらデータを保存し、必要なら自動でプロットする。
 
@@ -972,7 +1050,7 @@ def move_abs_plot(
     # ==========================
     # check status
     # ==========================
-    st0 = read_status(slave_id)
+    st0 = read_status(master, slave_id)
     start_pos = st0["pos"]
 
     if not st0["enabled"]:
@@ -987,12 +1065,12 @@ def move_abs_plot(
     # ==========================
     # send DPOS command
     # ==========================
-    send_cmd(slave_id, b"DPOS", 0, target_pos, vel, accel, decel)
-    trig()
+    send_cmd(master, slave_id, b"DPOS", 0, target_pos, vel, accel, decel)
+    trig(master)
     time.sleep(0.02)
 
-    send_cmd(slave_id, b"DPOS", 1, target_pos, vel, accel, decel)
-    trig()
+    send_cmd(master, slave_id, b"DPOS", 1, target_pos, vel, accel, decel)
+    trig(master)
 
     # ==========================
     # record during motion
@@ -1025,6 +1103,7 @@ def move_abs_plot(
         return False
 
     rows, last_status = record_until(
+        master,
         slave_id=slave_id,
         stop_condition=stop_condition,
         csv_path=csv_path,
@@ -1034,7 +1113,7 @@ def move_abs_plot(
     )
 
     time.sleep(SETTLE_TIME)
-    st = read_status(slave_id)
+    st = read_status(master, slave_id)
 
     final_error = st["pos"] - target_pos
 
@@ -1057,10 +1136,17 @@ def move_abs_plot(
 
     return rows, st, df
 
-def dpos(slaveId, target_pos_mm, vel=DEFAULT_VEL, accel=ACCEL, decel=DECEL):
+def dpos(
+    master: pysoem.Master,
+    slaveId: int,
+    target_pos_mm: float,
+    vel: int = DEFAULT_VEL,
+    accel: int = ACCEL,
+    decel: int = DECEL,
+) -> None:
     target_pos_encoder = round(target_pos_mm / RESOLUTION_MM)
-    move_abs(slaveId, target_pos_encoder, vel, accel, decel)
-    apos_encoder = read_status(slaveId)["pos"]
+    move_abs(master, slaveId, target_pos_encoder, vel, accel, decel)
+    apos_encoder = read_status(master, slaveId)["pos"]
     apos_mm = encoder_to_mm(apos_encoder)
     logger.info(f"APOS = {apos_mm:.5f} mm")
 
@@ -1105,8 +1191,8 @@ def calc_bpf_positions(bpf_id, central_freq_GHz, bandwidth_GHz):
 
     return positions
 
-def check_bpf_actuator_ready(name, slave_id):
-    status = read_status(slave_id)
+def check_bpf_actuator_ready(master: pysoem.Master, name: str, slave_id: int) -> dict[str, Any]:
+    status = read_status(master, slave_id)
 
     if not status["enabled"]:
         raise RuntimeError(f"{name}がenableされていません。")
@@ -1118,7 +1204,7 @@ def check_bpf_actuator_ready(name, slave_id):
     return status
 
 
-def halt_bpf(bpf_id):
+def halt_bpf(master: pysoem.Master, bpf_id: int) -> None:
     actuator_list = [
         (f"HPF #{i}", CONFIG["hpfs"][str(i)]["slave_id"])
         for i in get_bpf_hpf_ids(bpf_id)
@@ -1126,7 +1212,7 @@ def halt_bpf(bpf_id):
 
     for name, slave_id in actuator_list:
         try:
-            halt(slave_id)
+            halt(master, slave_id)
             logger.info(f"✅ {name} halted")
         except Exception as error:
             logger.error(f"🔴 {name} could not be halted: {error}")
@@ -1159,14 +1245,15 @@ def print_bpf_movement_result(name, slave_id, calculated_position_mm, status):
 
 
 def move_bpf(
-    bpf_id,
-    central_freq_GHz,
-    bandwidth_GHz,
-    vel=DEFAULT_VEL,
-    accel=ACCEL,
-    decel=DECEL,
-):
-    ## frequency -> positon
+    master: pysoem.Master,
+    bpf_id: int,
+    central_freq_GHz: float,
+    bandwidth_GHz: float,
+    vel: int = DEFAULT_VEL,
+    accel: int = ACCEL,
+    decel: int = DECEL,
+) -> dict[str, Any] | None:
+    ## frequency -> position
     positions = calc_bpf_positions(bpf_id, central_freq_GHz, bandwidth_GHz)
 
     actuator_list = [
@@ -1176,7 +1263,7 @@ def move_bpf(
 
     ## status check
     if master is None:
-        raise RuntimeError("EtherCAT masterが初期化されていません。init(IFNAME)を実行してください。")
+        raise RuntimeError("ethercat_master(IFNAME)で取得したmasterを渡してください。")
 
     max_slave_id = max(slave_id for _, slave_id, _ in actuator_list)
     if len(master.slaves) <= max_slave_id:
@@ -1187,7 +1274,7 @@ def move_bpf(
 
     status_before = {}
     for name, slave_id, calculated_position in actuator_list:
-        status_before[name] = check_bpf_actuator_ready(name, slave_id)
+        status_before[name] = check_bpf_actuator_ready(master, name, slave_id)
 
     ## pre-motion setting check
     logger.info(f"🔵 BPF #{bpf_id} setting")
@@ -1216,7 +1303,7 @@ def move_bpf(
     try:
         # Follow the explicit move_order in config.toml.
         for name, slave_id, calculated_position in actuator_list:
-            dpos(slave_id, calculated_position, vel=vel, accel=accel, decel=decel)
+            dpos(master, slave_id, calculated_position, vel=vel, accel=accel, decel=decel)
     except Exception:
         logger.error("🔴 移動中にエラーが発生しました。")
         raise
@@ -1231,7 +1318,7 @@ def move_bpf(
 
     print_section("Final status")
     for name, slave_id, calculated_position in actuator_list:
-        status = read_status(slave_id)
+        status = read_status(master, slave_id)
         result[name] = print_bpf_movement_result(
             name,
             slave_id,
@@ -1241,18 +1328,31 @@ def move_bpf(
 
     return result
 
-def close():
-    global master
+def close(master: pysoem.Master, *, request_init: bool = True) -> None:
+    """Request INIT and close the adapter even if the state request fails.
 
-    if master is None:
-        return
-
+    Normally called by ethercat_master(), not explicitly inside its with block.
+    request_init=False is used when opening the adapter did not complete.
+    """
+    state_error = None
     try:
-        master.state = pysoem.INIT_STATE
-        master.write_state()
+        if request_init:
+            master.state = pysoem.INIT_STATE
+            master.write_state()
+    except BaseException as error:
+        state_error = error
+        logger.error("Failed to request EtherCAT INIT during cleanup: %s", error)
     finally:
-        master.close()
-        master = None
+        try:
+            master.close()
+        except BaseException as error:
+            if state_error is not None:
+                error.add_note(f"INIT request also failed: {state_error}")
+            logger.error("Failed to close EtherCAT master: %s", error)
+            raise
+    logger.info("Master has been closed")
+    if state_error is not None:
+        raise state_error
 
 def print_section(title):
     logger.info("%s", title)

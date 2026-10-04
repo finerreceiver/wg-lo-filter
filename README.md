@@ -90,3 +90,45 @@ import scripts.utils as u
 
 Repeated configuration replaces the application's console handler; it does
 not change the root logger or unrelated libraries' logging configuration.
+
+## EtherCAT master lifetime
+
+Hardware functions now take a PySOEM master as their first argument.
+The module no longer stores a global master, and the old `u.init()` API has
+been replaced by a context manager:
+
+```python
+import scripts.utils as u
+
+with u.ethercat_master("eth0") as master:
+    u.prepare_actuator(master, 3, bpf_id=2)
+    u.find_index(master, 3, direction=0)
+    u.dpos(master, 3, target_pos_mm=1.0)
+    status = u.read_status(master, 3)
+# The master has been closed here; use a new with block for later commands.
+```
+
+The established initialization sequence and PDO timings are unchanged.
+On normal exit, initialization failure, an exception, or Ctrl+C, the context
+manager attempts INIT and then closes the adapter. If opening failed, it
+skips the INIT request but still attempts close. Close is attempted even if
+the INIT request fails. Cleanup failures propagate on normal exit; if
+another exception is already active, cleanup failures are logged and attached
+as notes without replacing that original exception.
+
+Do not call `u.close(master)` manually inside the with block.
+Closing the master is not a HALT command or a guaranteed emergency stop.
+Existing timeout/HALT handling runs inside the block before cleanup.
+Forced termination (SIGKILL), power loss, or a failure of the close operation
+cannot be protected against by a Python context manager.
+
+Pure configuration, calculation, conversion, and formatting functions
+(for example `get_bpf_slave_ids()`, `calc_bpf_positions()`, and
+`encoder_to_mm()`) do not require a master. CLI arguments are unchanged;
+the command-line examples above still apply.
+
+Dependency-free lifecycle/caller tests (no hardware communication):
+
+```sh
+python -m unittest discover -s tests -v
+```

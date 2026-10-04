@@ -31,46 +31,42 @@ if __name__ == "__main__":
 
     IFNAME = "eth0"
 
-    u.init(IFNAME)
     try:
-        slave_list = u.get_bpf_slave_ids(BPF_ID)
+        with u.ethercat_master(IFNAME) as master:
+            slave_list = u.get_bpf_slave_ids(BPF_ID)
 
-        for slave_id in slave_list:
-            u.print_section(f"Slave ID {slave_id}: pre-motion setup")
-            time.sleep(SECTION_DISPLAY_PAUSE_S)
+            for slave_id in slave_list:
+                u.print_section(f"Slave ID {slave_id}: pre-motion setup")
+                time.sleep(SECTION_DISPLAY_PAUSE_S)
 
-            ## Parameter setting
-            logger.info(f"▶️  [Slave ID = {slave_id}]: Now setting parameter...")
-            u.prepare_actuator(slave_id, bpf_id=BPF_ID)
-            logger.info(f"✅ [Slave ID = {slave_id}]: Parameters applied and controller enabled")
-            time.sleep(AFTER_PREPARATION_PAUSE_S)
+                ## Parameter setting
+                logger.info(f"▶️  [Slave ID = {slave_id}]: Now setting parameter...")
+                u.prepare_actuator(master, slave_id, bpf_id=BPF_ID)
+                logger.info(f"✅ [Slave ID = {slave_id}]: Parameters applied and controller enabled")
+                time.sleep(AFTER_PREPARATION_PAUSE_S)
 
-            ## Read status(1)
-            logger.info(f"📊 [Slave ID = {slave_id}]: Status before index search")
-            time.sleep(STEP_DISPLAY_PAUSE_S)
-            logger.debug(u.read_status(slave_id))
-            time.sleep(STEP_DISPLAY_PAUSE_S)
+                ## Read status(1)
+                logger.info(f"📊 [Slave ID = {slave_id}]: Status before index search")
+                time.sleep(STEP_DISPLAY_PAUSE_S)
+                logger.debug(u.read_status(master, slave_id))
+                time.sleep(STEP_DISPLAY_PAUSE_S)
 
-            ## Index search
-            logger.info(f"▶️ [Slave ID = {slave_id}]: Index search started")
-            time.sleep(STEP_DISPLAY_PAUSE_S)
-            u.find_index(slave_id, direction=0)
-            logger.info(f"✅ [Slave ID = {slave_id}]: Index has been found")
-            time.sleep(AFTER_INDEX_PAUSE_S)
+                ## Index search
+                logger.info(f"▶️ [Slave ID = {slave_id}]: Index search started")
+                time.sleep(STEP_DISPLAY_PAUSE_S)
+                u.find_index(master, slave_id, direction=0)
+                logger.info(f"✅ [Slave ID = {slave_id}]: Index has been found")
+                time.sleep(AFTER_INDEX_PAUSE_S)
 
-            ## Read status(2)
-            logger.info(f"📊 [Slave ID = {slave_id}]: Status before motion")
-            time.sleep(STEP_DISPLAY_PAUSE_S)
-            logger.debug(u.read_status(slave_id))
-            time.sleep(STEP_DISPLAY_PAUSE_S)
+                ## Read status(2)
+                logger.info(f"📊 [Slave ID = {slave_id}]: Status before motion")
+                time.sleep(STEP_DISPLAY_PAUSE_S)
+                logger.debug(u.read_status(master, slave_id))
+                time.sleep(STEP_DISPLAY_PAUSE_S)
 
-            logger.info(f"✅ [Slave ID = {slave_id}]: Pre-motion settinfg completed")
-            time.sleep(STEP_DISPLAY_PAUSE_S)
+                logger.info(f"✅ [Slave ID = {slave_id}]: Pre-motion settinfg completed")
+                time.sleep(STEP_DISPLAY_PAUSE_S)
 
-        logger.info(f"✅ BPF#{BPF_ID} setup completed!")
-        
+            logger.info(f"✅ BPF#{BPF_ID} setup completed!")
     finally:
-        ## masterのclose処理
-        u.close()
         time.sleep(CLOSE_DISPLAY_PAUSE_S)
-        logger.info("✅ Master has been closed")
