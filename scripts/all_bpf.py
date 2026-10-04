@@ -1,4 +1,7 @@
 import scripts.utils as u
+from scripts.logging_utils import add_logging_arguments, configure_logging, get_logger
+
+logger = get_logger("all_bpf")
 import argparse
 import time
 
@@ -18,7 +21,9 @@ if __name__ == "__main__":
     parser.add_argument("--central_freq", type=float, required=True)
     parser.add_argument("--band_width", type=float, required=True)
     parser.add_argument("--prepare", action="store_true", help="指定すると、移動前にパラメーター設定とindex探索を実行します。")
+    add_logging_arguments(parser)
     args = parser.parse_args()
+    configure_logging(args.log_level)
 
     BPF_ID = args.bpf_ID
     CENTRAL_FREQ_GHZ = args.central_freq
@@ -26,10 +31,10 @@ if __name__ == "__main__":
     PREPARE = args.prepare
 
     u.print_section("BPF configuration")
-    print(f"  BPF ID     : #{BPF_ID}")
-    print(f"  central frequency : {CENTRAL_FREQ_GHZ:.3f} GHz")
-    print(f"  bandwidth         : {BANDWIDTH_GHZ:.3f} GHz")
-    print()
+    logger.info(f"  BPF ID     : #{BPF_ID}")
+    logger.info(f"  central frequency : {CENTRAL_FREQ_GHZ:.3f} GHz")
+    logger.info(f"  bandwidth         : {BANDWIDTH_GHZ:.3f} GHz")
+    logger.debug("")
     time.sleep(CONFIG_DISPLAY_PAUSE_S)
 
     IFNAME = "eth0"
@@ -44,49 +49,49 @@ if __name__ == "__main__":
                 time.sleep(SECTION_DISPLAY_PAUSE_S)
 
                 ## Parameter setting
-                print(f"▶️  [Slave ID = {slave_id}]: Now setting parameter...")
+                logger.info(f"▶️  [Slave ID = {slave_id}]: Now setting parameter...")
                 u.prepare_actuator(slave_id, bpf_id=BPF_ID)
-                print(f"✅ [Slave ID = {slave_id}]: Parameters applied and controller enabled")
+                logger.info(f"✅ [Slave ID = {slave_id}]: Parameters applied and controller enabled")
                 time.sleep(AFTER_PREPARATION_PAUSE_S)
 
                 ## Read status(1)
-                print(f"📊 [Slave ID = {slave_id}]: Status before index search")
+                logger.info(f"📊 [Slave ID = {slave_id}]: Status before index search")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
-                print(u.read_status(slave_id))
+                logger.debug(u.read_status(slave_id))
                 time.sleep(STEP_DISPLAY_PAUSE_S)
 
                 ## Index search
-                print(f"▶️ [Slave ID = {slave_id}]: Index search started")
+                logger.info(f"▶️ [Slave ID = {slave_id}]: Index search started")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
                 u.find_index(slave_id, direction=0)
-                print(f"✅ [Slave ID = {slave_id}]: Index has been found")
+                logger.info(f"✅ [Slave ID = {slave_id}]: Index has been found")
                 time.sleep(AFTER_INDEX_PAUSE_S)
 
                 ## Read status(2)
-                print(f"📊 [Slave ID = {slave_id}]: Status before motion")
+                logger.info(f"📊 [Slave ID = {slave_id}]: Status before motion")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
-                print(u.read_status(slave_id))
+                logger.debug(u.read_status(slave_id))
                 time.sleep(STEP_DISPLAY_PAUSE_S)
 
-                print(f"✅ [Slave ID = {slave_id}]: Pre-motion settinfg completed")
+                logger.info(f"✅ [Slave ID = {slave_id}]: Pre-motion settinfg completed")
                 time.sleep(STEP_DISPLAY_PAUSE_S)
 
         else:
-            print("✅ We'll skip the actuator preparation")
+            logger.info("✅ We'll skip the actuator preparation")
 
         u.print_section(f"BPF motion")
         time.sleep(STEP_DISPLAY_PAUSE_S)
-        print("▶️  BPF making started")
+        logger.info("▶️  BPF making started")
         result = u.move_bpf(BPF_ID, CENTRAL_FREQ_GHZ, BANDWIDTH_GHZ)
         if result == None:
             time.sleep(STEP_DISPLAY_PAUSE_S)
             pass
         else:
             time.sleep(AFTER_MOTION_PAUSE_S)
-            print(f"✅ BPF#{BPF_ID} has been made")
+            logger.info(f"✅ BPF#{BPF_ID} has been made")
             time.sleep(STEP_DISPLAY_PAUSE_S)
 
     finally:
         ## masterのclose処理
         u.close()
-        print("✅ Master has been closed")
+        logger.info("✅ Master has been closed")

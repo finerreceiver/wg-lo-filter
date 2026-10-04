@@ -57,3 +57,36 @@ uv run python -m scripts.halt_bpf --bpf_ID 2
 Python callers can resolve a receiver or actuator using
 `get_bpf_id_for_receiver("B67")`, `get_bpf_slave_ids(bpf_id)`, and
 `get_bpf_id_for_slave(slave_id)`. The CLI continues to accept BPF IDs directly.
+
+## Logging
+
+Every CLI accepts `--log-level DEBUG|INFO|WARNING|ERROR|CRITICAL`
+(case-insensitive, default `INFO`). Standard Python logging emits timestamped
+messages to stderr; importing `scripts.utils` does not configure console output.
+
+```sh
+# Normal progress and movement results
+uv run python -m scripts.move_bpf --bpf_ID 2 --central_freq 100 --band_width 10
+# Include full controller statuses
+uv run python -m scripts.prepare_bpf --bpf_ID 2 --log-level DEBUG
+# Only warnings and errors
+uv run python -m scripts.all_hpf --slaveID 3 --dpos_mm 1.0 --log-level WARNING
+```
+
+`INFO` includes progress and position results; `DEBUG` includes full statuses
+and acknowledgement diagnostics. `WARNING` includes canceled motion and
+missing diagnostic data; `ERROR` includes movement/HALT failures and timeouts.
+Because status inspection is its primary purpose, `read_status_hpf` reports
+its status at `INFO`. Changing the log threshold does not skip status reads,
+motion commands, or HALT, and does not suppress Python exceptions/tracebacks.
+
+For IPython/notebook use, configure logging explicitly:
+
+```python
+from scripts.logging_utils import configure_logging
+configure_logging("DEBUG")
+import scripts.utils as u
+```
+
+Repeated configuration replaces the application's console handler; it does
+not change the root logger or unrelated libraries' logging configuration.

@@ -1,4 +1,7 @@
 import scripts.utils as u
+from scripts.logging_utils import add_logging_arguments, configure_logging, get_logger
+
+logger = get_logger("read_status_hpf")
 import argparse
 import time
 
@@ -13,21 +16,23 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--slaveID", type=int, required=True)
+    add_logging_arguments(parser)
     args = parser.parse_args()
+    configure_logging(args.log_level)
 
     SLAVE_ID = args.slaveID
-    print()
+    logger.debug("")
     u.init(IFNAME)
     try:
         u.enable(SLAVE_ID)
         time.sleep(ENABLE_STATUS_WAIT_S)
-        print(u.read_status(SLAVE_ID))
+        logger.info(u.read_status(SLAVE_ID))
         position_mm = u.encoder_to_mm(u.read_status(SLAVE_ID)['pos'])
-        print(f"Position: {position_mm} [mm]")
+        logger.info(f"Position: {position_mm} [mm]")
     finally:
         u.close()
         time.sleep(CLOSE_DISPLAY_PAUSE_S)
-        print("✅ Master has been closed")
+        logger.info("✅ Master has been closed")
 
 
            
