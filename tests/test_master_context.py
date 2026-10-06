@@ -14,17 +14,16 @@ fake_pysoem = types.ModuleType("pysoem")
 fake_pysoem.INIT_STATE = 1
 fake_pysoem.SAFEOP_STATE = 4
 fake_pysoem.OP_STATE = 8
-fake_numpy = types.ModuleType("numpy")
 spec = importlib.util.spec_from_file_location("_test_actuator_utils", ROOT / "scripts/utils.py")
 u = importlib.util.module_from_spec(spec)
-with patch.dict(sys.modules, {"pysoem": fake_pysoem, "numpy": fake_numpy}):
+with patch.dict(sys.modules, {"pysoem": fake_pysoem}):
     spec.loader.exec_module(u)
 
 HARDWARE = {
     "send_cmd", "trig", "command", "read_status", "wait_until", "enable",
-    "disable", "halt", "reset", "find_index", "move_abs", "scan", "stop_scan",
+    "halt", "reset", "find_index", "move_abs",
     "set_param", "apply_default_settings", "pdo_settle", "prepare_actuator",
-    "record_until", "move_abs_plot", "dpos", "check_bpf_actuator_ready",
+    "dpos", "check_bpf_actuator_ready",
     "halt_bpf", "move_bpf",
 }
 

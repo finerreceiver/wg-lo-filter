@@ -39,8 +39,8 @@ The BPF cancellation boundary retains the existing expression
 `calculated_position >= MAX_DESIRED_POSITION_MM - RESOLUTION_MM`, with
 `MAX_DESIRED_POSITION_MM = 2.5` in `utils.py`. With the current resolution,
 positions at or above 2.49875 mm are canceled; this is separate from `HLIM`.
-`move_abs_plot()` internals are unchanged. The legacy `command(delay=...)`
-argument remains unused and does not introduce a new pause.
+The legacy `command(delay=...)` argument remains unused and does not introduce
+a new pause.
 
 Configuration is loaded and validated when `scripts.utils` is imported.
 Restart the script or interactive Python session after editing it.
@@ -73,7 +73,7 @@ uv run lo-filter.py reset --hpf-id 5
 
 プロジェクトルートからは `uv run scripts/lo-filter.py ...`。
 `lo-filter` という実行コマンドは登録していません。
-依存は `pyproject.toml` のPySOEM・NumPy・Typer。Python 3.11以上が必要です。
+依存は `pyproject.toml` のPySOEM・Typer。Python 3.11以上が必要です。
 
 | コマンド | 必須引数 | 任意引数 |
 | --- | --- | --- |
