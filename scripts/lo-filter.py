@@ -57,7 +57,7 @@ def prepare(rx: Rx = None, hpf_id: Hpf = None, log_level: LogLevel = "INFO") -> 
     ), log_level)
 
 
-@app.command("set")
+@app.command()
 def set(
     rx: Annotated[str, typer.Option("--rx", help="Receiver: 4+5 or 6+7.")],
     lo: Annotated[float, typer.Option("--lo", help="RF first LO frequency [GHz].")],
